@@ -6,8 +6,10 @@
   const VIENNA_ZOOM = 12;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
-  const CACHE_KEY = 'hns_vienna_osm_v4';
-  const CACHE_TS_KEY = 'hns_vienna_osm_v4_ts';
+  const CACHE_KEY = 'hns_vienna_osm_v5';
+  const CACHE_TS_KEY = 'hns_vienna_osm_v5_ts';
+  const RAIL_CACHE_KEY = 'hns_vienna_rails_v1';
+  const RAIL_CACHE_TS_KEY = 'hns_vienna_rails_v1_ts';
   const POI_CACHE_PREFIX = 'hns_vienna_poi_v1_';
 
   const QUESTION_CARDS = [
@@ -52,6 +54,7 @@
     possibleArea:null, baseAllowedArea:null, baseRadiusBuilt:null,
     poiCache:{}, tentaclePreview:null, pendingOverlay:null,
     realtimeChannel:null, timerId:null, pollId:null, serverOffsetMs:0,
+    overpassBadUntil:{}, railLoadPromise:null,
     confirmResolver:null
   };
 
@@ -93,29 +96,137 @@
   function safeDifference(a,b){ if(!a)return null; if(!b)return a; try{return turf.difference(turf.featureCollection([a,b]));}catch(e){console.warn('difference',e);return a;} }
   function safeUnion(a,b){ if(!a)return b; if(!b)return a; try{return turf.union(turf.featureCollection([a,b]))||a;}catch(_){return a;} }
 
+  function overpassEndpoints(){
+    const configured=[];
+    if(Array.isArray(CFG.OVERPASS_ENDPOINTS))configured.push(...CFG.OVERPASS_ENDPOINTS);
+    if(CFG.OVERPASS_ENDPOINT)configured.push(CFG.OVERPASS_ENDPOINT);
+    configured.push('https://overpass.private.coffee/api/interpreter','https://overpass-api.de/api/interpreter');
+    return [...new Set(configured.filter(Boolean).map(x=>String(x).replace(/\/$/,'')))];
+  }
+
+  async function fetchOverpass(query,label='Overpass request',timeoutMs=45000){
+    const endpoints=overpassEndpoints();
+    let lastError=null;
+    for(const endpoint of endpoints){
+      if((state.overpassBadUntil[endpoint]||0)>Date.now())continue;
+      const controller=new AbortController();
+      const timer=setTimeout(()=>controller.abort(),timeoutMs);
+      try{
+        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query),signal:controller.signal});
+        clearTimeout(timer);
+        if(!response.ok){
+          const err=new Error(`${label}: ${endpoint} returned HTTP ${response.status}.`);
+          err.status=response.status;
+          if([429,502,503,504].includes(response.status))state.overpassBadUntil[endpoint]=Date.now()+5*60e3;
+          lastError=err;
+          continue;
+        }
+        return await response.json();
+      }catch(e){
+        clearTimeout(timer);
+        if(e?.name==='AbortError')lastError=new Error(`${label}: ${endpoint} timed out.`);
+        else lastError=e;
+        state.overpassBadUntil[endpoint]=Date.now()+2*60e3;
+      }
+    }
+    throw new Error(`${label} failed on all configured Overpass servers. ${lastError?.message||''}`.trim());
+  }
+
+  function processBoundaryGeoJSON(geo){
+    const features=geo.features||[];
+    const city=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='4'&&t.name==='Wien'&&isPolygon(f);}).sort((a,b)=>safeArea(b)-safeArea(a))[0];
+    if(!city)throw new Error('Could not identify the Vienna boundary.');
+    const districts=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='9'&&isPolygon(f);}).map(f=>({feature:f,number:districtNumber(f.properties?.tags||{}),name:(f.properties?.tags||{}).name||'District'})).filter(d=>d.number>=1&&d.number<=23);
+    if(districts.length<20)console.warn(`Only ${districts.length} Vienna districts were returned.`);
+    return {city,districts};
+  }
+
+  function parseStationElements(osm,city){
+    const stations=(osm.elements||[]).map((e,i)=>{
+      const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;
+      if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+      const tags=e.tags||{};
+      const p=turf.point([lng,lat],{stationName:tags.name||tags['name:de']||'Unnamed station',stationId:`${e.type||'element'}/${e.id??i}`,railway:tags.railway,subway:tags.subway||null});
+      try{if(city&&!turf.booleanPointInPolygon(p,city))return null;}catch(_){}
+      return p;
+    }).filter(Boolean);
+    const seen=new Set();
+    return stations.filter(s=>{const [lng,lat]=s.geometry.coordinates;const k=`${s.properties.stationName}|${lat.toFixed(5)}|${lng.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;});
+  }
+
   async function ensureMapData(force=false) {
     if (state.mapData && !force) return state.mapData;
     const ttl=(Number(CFG.OSM_CACHE_HOURS)||168)*3600e3;
     const ts=Number(localStorage.getItem(CACHE_TS_KEY)||0);
     if (!force && Date.now()-ts<ttl) {
-      try { const cached=JSON.parse(localStorage.getItem(CACHE_KEY)); if(cached?.features?.length){ state.mapData=processOsmGeoJSON(cached); return state.mapData; } } catch(_){}
+      try {
+        const cached=JSON.parse(localStorage.getItem(CACHE_KEY));
+        if(cached?.city&&cached?.districts?.length&&cached?.stations?.length){state.mapData=cached;state.mapData.railLines=state.mapData.railLines||[];loadRailLinesInBackground(false);return state.mapData;}
+      } catch(_){}
     }
-    const endpoint=CFG.OVERPASS_ENDPOINT||'https://overpass-api.de/api/interpreter';
-    const query=`[out:json][timeout:90];
+
+    toast('Loading Vienna boundary…',3500);
+    const boundaryQuery=`[out:json][timeout:60];
 area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
 (
  relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"];
  relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
- nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
- way(area.vienna)["railway"~"^(rail|subway)$"];
 );
 out body;>;out skel qt;`;
-    toast('Loading Vienna districts, stations and rail lines…',5000);
-    const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query)});
-    if(!response.ok)throw new Error(`Overpass returned HTTP ${response.status}.`);
-    const osm=await response.json(); const geo=osmtogeojson(osm);
-    localStorage.setItem(CACHE_KEY,JSON.stringify(geo)); localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
-    state.mapData=processOsmGeoJSON(geo); return state.mapData;
+    const boundaryOsm=await fetchOverpass(boundaryQuery,'Vienna boundary/district query',50000);
+    const boundary=processBoundaryGeoJSON(osmtogeojson(boundaryOsm));
+
+    toast('Loading Vienna rail and U-Bahn stations…',4000);
+    const stationQuery=`[out:json][timeout:45];
+area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
+out center tags;`;
+    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',40000);
+    const stations=parseStationElements(stationOsm,boundary.city);
+    if(!stations.length)throw new Error('No Vienna stations were returned by Overpass.');
+
+    state.mapData={city:boundary.city,districts:boundary.districts,stations,railLines:[]};
+    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));
+    localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
+    loadRailLinesInBackground(force);
+    return state.mapData;
+  }
+
+  async function loadRailLinesInBackground(force=false){
+    if(!state.mapData)return;
+    if(state.railLoadPromise)return state.railLoadPromise;
+    state.railLoadPromise=(async()=>{
+      const ttl=(Number(CFG.OSM_CACHE_HOURS)||168)*3600e3;
+      const ts=Number(localStorage.getItem(RAIL_CACHE_TS_KEY)||0);
+      if(!force&&Date.now()-ts<ttl){
+        try{const cached=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY));if(Array.isArray(cached)&&cached.length){state.mapData.railLines=cached;refreshRailLayers();return;}}catch(_){}
+      }
+      const query=`[out:json][timeout:60];
+area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+(
+ way(area.vienna)["railway"~"^(subway|light_rail)$"];
+ way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
+);
+out geom tags;`;
+      try{
+        const osm=await fetchOverpass(query,'Vienna rail-line query',50000);
+        const geo=osmtogeojson(osm);
+        const lines=(geo.features||[]).filter(f=>['LineString','MultiLineString'].includes(f.geometry?.type));
+        state.mapData.railLines=lines;
+        localStorage.setItem(RAIL_CACHE_KEY,JSON.stringify(lines));localStorage.setItem(RAIL_CACHE_TS_KEY,String(Date.now()));
+        refreshRailLayers();
+      }catch(e){console.warn('Rail overlay unavailable; base map and stations remain usable.',e);toast('Rail overlay could not load; stations and game map remain usable.',4500);}
+    })().finally(()=>{state.railLoadPromise=null;});
+    return state.railLoadPromise;
+  }
+
+  function refreshRailLayers(){
+    [['create-',state.createMap],['game-',state.gameMap]].forEach(([prefix,map])=>{
+      if(!map||!state.mapData)return;
+      state.mapLayers[prefix+'rails']?.remove();
+      state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(state.mapData.railLines||[]),{style:mapGeoStyle('rail')}).addTo(map);
+      state.mapLayers[prefix+'stations']?.bringToFront?.();
+    });
   }
 
   function processOsmGeoJSON(geo) {
@@ -171,10 +282,12 @@ out body;>;out skel qt;`;
   function hidingSpotValid(){ return !!(state.createPoint&&state.createStation&&distanceM(state.createPoint,selectedStationPoint())<=BASE_HIDE_RADIUS_M+0.5); }
 
   async function setupCreateMap(){
-    await ensureMapData();
     if(!state.createMap){ state.createMap=L.map('createMap',baseMapOptions()); addBaseTiles(state.createMap); state.createMap.on('click',e=>{if(!state.createPickMode)return;state.createPickMode=false;setCreatePoint(e.latlng.lat,e.latlng.lng,null,'map');}); }
+    $('createStationStatus').className='status-box';$('createStationStatus').textContent='Loading Vienna stations… the base map is already usable.';
+    await ensureMapData();
     drawReferenceLayers(state.createMap,'create-',f=>selectCreateStation(f));
     state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8]});
+    if(!state.createStation){$('createStationStatus').className='status-box good';$('createStationStatus').textContent='Stations loaded. Tap a rail/U-Bahn station marker.';}
     renderCreateSelection();
   }
 
@@ -290,10 +403,9 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
     if(state.poiCache[type])return state.poiCache[type];
     const key=POI_CACHE_PREFIX+type, cached=localStorage.getItem(key);
     if(cached){try{const obj=JSON.parse(cached);if(Date.now()-obj.ts<24*3600e3&&Array.isArray(obj.pois)){state.poiCache[type]=obj.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];}}catch(_){}}
-    const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No Overpass filter for ${type}.`); const endpoint=CFG.OVERPASS_ENDPOINT||'https://overpass-api.de/api/interpreter';
-    const query=`[out:json][timeout:60];area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;nwr(area.vienna)${filter};out center tags;`;
-    const res=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query)}); if(!res.ok)throw new Error(`Overpass POI query returned HTTP ${res.status}.`);
-    const osm=await res.json(); const raw=(osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
+    const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No Overpass filter for ${type}.`);
+    const query=`[out:json][timeout:45];area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;nwr(area.vienna)${filter};out center tags;`;
+    const osm=await fetchOverpass(query,`${humanize(type)} Tentacle query`,40000); const raw=(osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
     localStorage.setItem(key,JSON.stringify({ts:Date.now(),pois:raw})); state.poiCache[type]=raw.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];
   }
   function humanize(s){return String(s).replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());}

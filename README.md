@@ -1,3 +1,7 @@
+# Vienna Hide & Seek v3.1.2
+
+**Hotfix over v3.1.1:** startup Overpass loading is now split into lightweight sequential requests, automatically falls back between public Overpass instances, displays the Leaflet/OSM map before Overpass finishes, and treats the rail-line overlay as optional background data. Tentacle requests use the same fallback system. No Supabase SQL/database change is required from v3.1.1.
+
 # Vienna Hide & Seek — MVP v3.1
 
 Mobile-first Hider/Seeker web app for Vienna. This revision adds a private two-stage target model, a 250 m station hiding zone, per-question GPS/manual origins, Jet Lag-style Radar/Thermometer/Tentacle rewards, Overpass-powered Tentacle previews, suggested hider answers, Veto/Duplicate/Time Trap mechanics, and a revised card deck.

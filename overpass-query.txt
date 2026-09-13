@@ -1,18 +1,33 @@
-# Base Vienna map query used by app.js
-[out:json][timeout:90];
+# v3.1.2: startup is intentionally split into small sequential queries.
+
+# 1) Vienna boundary + 23 districts
+[out:json][timeout:60];
 area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
 (
   relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"];
   relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
-  nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
-  way(area.vienna)["railway"~"^(rail|subway)$"];
 );
 out body;
 >;
 out skel qt;
 
-# Tentacle queries are generated on demand. Example: museums
-# [out:json][timeout:60];
+# 2) Stations only (small; required before game creation)
+[out:json][timeout:45];
+area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
+out center tags;
+
+# 3) Rail overlay (optional/background; failure never blocks the game)
+[out:json][timeout:60];
+area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+(
+  way(area.vienna)["railway"~"^(subway|light_rail)$"];
+  way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
+);
+out geom tags;
+
+# Tentacle queries are also small on-demand requests, e.g. parks:
+# [out:json][timeout:45];
 # area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
-# nwr(area.vienna)["tourism"="museum"];
+# nwr(area.vienna)["leisure"="park"];
 # out center tags;
