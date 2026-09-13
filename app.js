@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.3.4';
+  const APP_VERSION = '3.5.0';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -34,16 +34,16 @@
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
 
   const QUESTION_CARDS = [
+    { slot:'same-district', category:'MIXED', title:'Same District', detail:'Are you in the same Vienna Bezirk?', kind:'district' },
     { slot:'radar-20000', category:'RADAR', title:'20 km Radar', detail:'Is the target within 20 km of this location?', kind:'radar', radius_m:20000 },
     { slot:'radar-10000', category:'RADAR', title:'10 km Radar', detail:'Is the target within 10 km of this location?', kind:'radar', radius_m:10000 },
     { slot:'radar-5000', category:'RADAR', title:'5 km Radar', detail:'Is the target within 5 km of this location?', kind:'radar', radius_m:5000 },
     { slot:'radar-1000', category:'RADAR', title:'1 km Radar', detail:'Is the target within 1 km of this location?', kind:'radar', radius_m:1000 },
     { slot:'radar-500', category:'RADAR', title:'500 m Radar', detail:'Is the target within 500 m of this location?', kind:'radar', radius_m:500 },
     { slot:'radar-100', category:'RADAR', title:'100 m Radar', detail:'Is the target within 100 m of this location?', kind:'radar', radius_m:100 },
-    { slot:'thermo-250', category:'THERMOMETER', title:'250 m Thermometer', detail:'After travelling ≥250 m, are you warmer?', kind:'thermometer', min_travel_m:250 },
-    { slot:'thermo-500', category:'THERMOMETER', title:'500 m Thermometer', detail:'After travelling ≥500 m, are you warmer?', kind:'thermometer', min_travel_m:500 },
-    { slot:'thermo-2000', category:'THERMOMETER', title:'2 km Thermometer', detail:'After travelling ≥2 km, are you warmer?', kind:'thermometer', min_travel_m:2000 },
-    { slot:'same-district', category:'MATCHING', title:'Same District', detail:'Are you in the same Vienna Bezirk?', kind:'district' },
+    { slot:'thermo-250', category:'THERMOMETER', title:'250 m Thermometer', detail:'Start here; after moving ≥250 m ask whether you are warmer.', kind:'thermometer', min_travel_m:250 },
+    { slot:'thermo-500', category:'THERMOMETER', title:'500 m Thermometer', detail:'Start here; after moving ≥500 m ask whether you are warmer.', kind:'thermometer', min_travel_m:500 },
+    { slot:'thermo-2000', category:'THERMOMETER', title:'2 km Thermometer', detail:'Start here; after moving ≥2 km ask whether you are warmer.', kind:'thermometer', min_travel_m:2000 },
     { slot:'tentacle-museums', category:'TENTACLES', title:'Museums', detail:'Which mapped museum in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'museum' },
     { slot:'tentacle-parks', category:'TENTACLES', title:'Parks', detail:'Which mapped park in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'park' },
     { slot:'tentacle-libraries', category:'TENTACLES', title:'Libraries', detail:'Which mapped library in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'library' },
@@ -51,7 +51,11 @@
     { slot:'tentacle-hospitals', category:'TENTACLES', title:'Hospitals', detail:'Which mapped hospital in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'hospital' },
     { slot:'tentacle-zoos', category:'TENTACLES', title:'Zoos', detail:'Which mapped zoo in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'zoo' },
     { slot:'tentacle-aquariums', category:'TENTACLES', title:'Aquariums', detail:'Which mapped aquarium in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'aquarium' },
-    { slot:'tentacle-amusement', category:'TENTACLES', title:'Amusement Parks', detail:'Which mapped amusement park in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'amusement_park' }
+    { slot:'tentacle-amusement', category:'TENTACLES', title:'Amusement Parks', detail:'Which mapped amusement park in the remaining zone is the hider closest to?', kind:'tentacle', poi_type:'amusement_park' },
+    { slot:'photo-water', category:'PHOTO', title:'Biggest body of water', detail:'Send a photo of the biggest body of water visible from the hiding area.', kind:'photo', photo_prompt:'Biggest body of water' },
+    { slot:'photo-structure', category:'PHOTO', title:'Highest visible structure', detail:'Send a photo of the highest visible structure.', kind:'photo', photo_prompt:'Highest visible structure' },
+    { slot:'photo-selfie', category:'PHOTO', title:'Selfie', detail:'Send a current selfie from the hiding location.', kind:'photo', photo_prompt:'Selfie' },
+    { slot:'photo-four-houses', category:'PHOTO', title:'At least 4 houses in one image', detail:'Send one photo containing at least four houses.', kind:'photo', photo_prompt:'At least 4 houses in one image' }
   ];
 
   const POI_QUERIES = {
@@ -79,6 +83,9 @@
     overpassBadUntil:{}, railLoadPromise:null,
     confirmResolver:null,
     currentPosition:null,currentPositionMarker:null,currentPositionAccuracyCircle:null,
+    gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
+    thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
+    seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
     developerPassword:null,referenceMeta:{}
   };
 
@@ -546,12 +553,12 @@
     return {};
   }
 
-  function stationIconClass(feature){
-    const modes=feature?.properties?.transitModes||[];
-    if(modes.includes('subway')&&modes.includes('rail'))return 'station-dot station-interchange';
-    if(modes.includes('subway'))return 'station-dot station-subway';
-    return 'station-dot station-rail';
-  }
+  const TRANSIT_LINE_COLOURS={U1:'#e20613',U2:'#a762a3',U3:'#ef7c00',U4:'#00963f',U5:'#00a6a6',U6:'#9d6930'};
+  function transitLineColour(ref){const r=String(ref||'').toUpperCase();if(TRANSIT_LINE_COLOURS[r])return TRANSIT_LINE_COLOURS[r];if(/^S\d+/i.test(r))return '#1769aa';return '#475569';}
+  function stationMarkerBackground(feature){const refs=(feature?.properties?.lineRefs||[]).filter(Boolean);const colours=[...new Set(refs.map(transitLineColour))];if(!colours.length)return '#475569';if(colours.length===1)return colours[0];const step=360/colours.length;return `conic-gradient(${colours.map((c,i)=>`${c} ${i*step}deg ${(i+1)*step}deg`).join(',')})`;}
+  function stationDivIcon(feature){const bg=stationMarkerBackground(feature);return L.divIcon({className:'station-marker-shell',iconSize:[18,18],html:`<span class="station-dot-inner" style="--station-bg:${bg}"></span>`});}
+  function updateStationMarkerSize(map){if(!map)return;const z=map.getZoom();const px=z<=10?11.5:z<=11?12.5:z<=12?13.5:z<=13?14.5:16;map.getContainer().style.setProperty('--station-size',`${px}px`);}
+  function bindStationMarkerSizing(map){if(map._hnsStationSizingBound)return;map._hnsStationSizingBound=true;map.on('zoomend',()=>updateStationMarkerSize(map));updateStationMarkerSize(map);}
 
   function drawReferenceLayers(map,prefix,onStationClick=null){
     const md=state.mapData;
@@ -560,9 +567,9 @@
     if(prefix!=='create-')state.mapLayers[prefix+'districts']=L.geoJSON(turf.featureCollection(md.districts.map(d=>d.feature)),{style:mapGeoStyle('district'),interactive:false}).addTo(map);
     state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(md.railLines),{style:f=>mapGeoStyle('rail',f),interactive:false}).addTo(map);
     state.mapLayers[prefix+'stations']=L.geoJSON(turf.featureCollection(md.stations),{
-      pointToLayer:(f,ll)=>L.marker(ll,{icon:L.divIcon({className:stationIconClass(f),iconSize:[18,18]})}),
-      onEachFeature:(f,layer)=>{ layer.bindTooltip(`${f.properties?.stationName||'Station'}${f.properties?.lineRefs?.length?` · ${f.properties.lineRefs.join(', ')}`:''}`,{direction:'top',offset:[0,-7]}); if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);}); }
-    }).addTo(map);
+      pointToLayer:(f,ll)=>L.marker(ll,{icon:stationDivIcon(f)}),
+      onEachFeature:(f,layer)=>{layer.bindTooltip(`${f.properties?.stationName||'Station'}${f.properties?.lineRefs?.length?` · ${f.properties.lineRefs.join(', ')}`:''}`,{direction:'top',offset:[0,-7]});if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);});}
+    }).addTo(map);bindStationMarkerSizing(map);
   }
 
   async function buildBaseAllowedArea(radiusM=BASE_HIDE_RADIUS_M){
@@ -646,6 +653,7 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
   async function enterSeeker(gameId){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status').eq('id',gameId).single(); if(error)throw error; state.role='seeker';state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon(); }
 
   async function enterGameCommon(){
+    state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
     await ensureMapData(); setupGameMap();
     $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
     showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
@@ -653,6 +661,7 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
 
   function setupGameMap(){
     if(!state.gameMap){ state.gameMap=L.map('gameMap',baseMapOptions()); addBaseTiles(state.gameMap); state.gameMap.on('click',e=>handleGameMapClick(e.latlng)); }
+    clearPrivateMapLayers();
     drawReferenceLayers(state.gameMap,'game-',f=>{ if(state.role==='hider'&&state.trapPlacementCard)placeTimeTrapAtStation(f).catch(handleError); });
     state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[5,5]});
   }
@@ -661,8 +670,7 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
     if(state.pickMode==='current_position'){state.pickMode=null;setCurrentPosition({lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'});return;}
     if(state.role==='hider'&&state.endgamePickMode){state.endgamePickMode=false;setEndgameCandidate(latlng.lat,latlng.lng,null,'map');return;}
     if(state.role!=='seeker')return;
-    if(state.pickMode==='question'&&state.pendingQuestionCard){ const card=state.pendingQuestionCard; state.pickMode=null;state.pendingQuestionCard=null; const origin={lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'};setCurrentPosition(origin,{pan:false});prepareAndAskQuestion(card,origin).catch(handleError); return; }
-    if(state.pickMode==='thermo'){ state.pickMode=null; const origin={lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'};setCurrentPosition(origin,{pan:false});submitThermoReference(origin).catch(handleError); }
+    if(state.pickMode==='question'&&state.pendingQuestionCard){ const card=state.pendingQuestionCard; state.pickMode=null;state.pendingQuestionCard=null; const origin={lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'};setCurrentPosition(origin,{pan:false});handleQuestionCard(card,origin).catch(handleError); return; }
   }
 
   function setSeekerPointDisplay(origin){
@@ -684,44 +692,93 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
     $('currentPositionStatus').className=`status-box ${state.currentPosition.accuracy_m>100?'warn':'good'}`;
     $('currentPositionStatus').textContent=`${state.currentPosition.lat.toFixed(5)}, ${state.currentPosition.lng.toFixed(5)} · ${acc}`;
     if(pan)state.gameMap.panTo([state.currentPosition.lat,state.currentPosition.lng]);
+    if(state.role==='seeker')renderQuestionDeck();
   }
-  async function useCurrentGps(){const p=await getGps();setCurrentPosition({...p,source:'gps'});}
-  function beginManualCurrentPosition(){state.pickMode='current_position';toast('Tap anywhere on the map to set your current position. You can also drag the marker afterward.');}
+  async function publishSeekerLivePosition(p){if(state.role!=='seeker'||!state.game)return;const {error}=await state.supabase.rpc('set_seeker_live_position_v1',{p_game_id:state.game.id,p_lat:p.lat,p_lng:p.lng,p_accuracy_m:p.accuracy_m??null});if(error)throw error;}
+  function stopGpsAutoTracking(){if(state.gpsAutoTimer)clearInterval(state.gpsAutoTimer);state.gpsAutoTimer=null;state.gpsAutoEnabled=false;}
+  async function refreshGpsAutoPosition(){if(!state.game||!state.gpsAutoEnabled)return;try{const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'},{pan:false});if(state.role==='seeker')await publishSeekerLivePosition(p);}catch(e){console.warn('Automatic GPS refresh failed',e);}}
+  function startGpsAutoTracking(){stopGpsAutoTracking();state.gpsAutoEnabled=true;state.gpsAutoTimer=setInterval(()=>refreshGpsAutoPosition(),30*60*1000);}
+  async function useCurrentGps(){const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();$('currentPositionStatus').textContent+=' · auto-refresh every ~30 min';toast('GPS set. It will refresh about every 30 minutes while this game page remains active.');}
+  function beginManualCurrentPosition(){stopGpsAutoTracking();state.pickMode='current_position';toast('Tap anywhere on the map to set your current position. You can also drag the marker afterward.');}
 
-  async function chooseQuestionOrigin(card){
+
+  function cancelQuestionPreview(){
+    state.previewQuestionSlot=null;state.previewQuestionCard=null;state.pendingQuestionCard=null;if(state.pickMode==='question')state.pickMode=null;clearPendingOverlay();clearPoiPreview();
+  }
+
+  async function resolveQuestionOrigin(card,providedOrigin=null){
+    if(providedOrigin)return providedOrigin;
     let origin=state.currentPosition;
     if(state.seekerOriginMode==='gps'){
       const p=await getGps();origin={...p,source:'gps'};setCurrentPosition(origin,{pan:false});
     }else if(!origin){
-      state.pendingQuestionCard=card;state.pickMode='question';toast(`Tap the map to set the current/question location for ${card.title}.`);return;
+      state.pendingQuestionCard=card;state.pickMode='question';toast(`Tap the map to set the current position for ${card.title}.`);return null;
     }
-    await prepareAndAskQuestion(card,{...origin});
+    return {...origin};
   }
 
-  async function prepareAndAskQuestion(card,origin){
+  async function askQuestionPayload(card,payload,description){
+    const ok=await confirmAction('Send this question?',`${description}\n\nThe Hider gets 15 minutes to resolve it before late-answer penalties begin.`,`Send ${card.title}`);
+    if(!ok)return false;
+    const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:card.kind,p_payload:payload});
+    if(error)throw error;
+    cancelQuestionPreview();await reloadGameState();return true;
+  }
+
+  async function handleQuestionCard(card,providedOrigin=null){
+    if(state.role!=='seeker')return;
     if(activeQuestionForSlot(card.slot))return toast('That question has already been asked.');
-    let payload={slot_key:card.slot,question_kind:card.kind,title:card.title,origin}; let description=`${card.title}\nOrigin: ${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}${origin.accuracy_m?` · GPS ±${Math.round(origin.accuracy_m)} m`:' · manual'}`;
-    clearPoiPreview();
-    if(card.kind==='radar'){ payload.center={lat:origin.lat,lng:origin.lng};payload.radius_m=card.radius_m; previewQuestionGeometry(payload); }
-    else if(card.kind==='district'){ const d=pointDistrict(turf.point([origin.lng,origin.lat])); if(!d)return toast('This question origin is outside Vienna.'); payload.district_number=d.number;payload.district_name=d.name;description+=`\nDistrict: ${d.number}. ${d.name}`; }
-    else if(card.kind==='thermometer'){
-      if(!state.thermoReference)return toast('Set a Thermometer start point first.'); const [flng,flat]=state.thermoReference.geometry.coordinates; const travelled=turf.distance(state.thermoReference,turf.point([origin.lng,origin.lat]),{units:'meters'}); if(travelled+0.5<card.min_travel_m)return toast(`You have only moved ${Math.round(travelled)} m; this card requires at least ${card.min_travel_m} m.`);
-      payload.from={lat:flat,lng:flng};payload.to={lat:origin.lat,lng:origin.lng};payload.min_travel_m=card.min_travel_m;description+=`\nTravelled: ${Math.round(travelled)} m`;previewQuestionGeometry(payload);
-    } else if(card.kind==='tentacle'){
-      toast(`Loading ${card.title} reference data…`,3500); const all=await loadPoiType(card.poi_type);
-      const candidates=all.filter(p=>pointInPossible(p));
-      const pois=candidates.map(p=>({id:p.properties.poiId,name:p.properties.poiName,lat:p.geometry.coordinates[1],lng:p.geometry.coordinates[0]}));
-      payload.poi_type=card.poi_type;payload.valid_distance_m=TENTACLE_VALID_DISTANCE_M;payload.pois=pois;description+=`
-${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable area.`; showPoiPreview(pois);
-    }
-    if(origin.accuracy_m&&card.kind==='radar'&&origin.accuracy_m>Math.max(25,card.radius_m/2))description+=`\nWARNING: reported GPS accuracy (±${Math.round(origin.accuracy_m)} m) is poor relative to this Radar radius.`;
-    const ok=await confirmAction('Send this question?',`${description}\n\nThe hider will receive the same question preview plus a privately calculated suggested answer.`,`Send ${card.title}`); if(!ok){clearPendingOverlay();clearPoiPreview();return;}
-    const {error}=await state.supabase.rpc('ask_question_v3',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:card.kind,p_payload:payload}); if(error)throw error; await reloadGameState();
-  }
+    if(state.previewQuestionSlot&&state.previewQuestionSlot!==card.slot)cancelQuestionPreview();
 
-  async function submitThermoReference(origin){
-    const ok=await confirmAction('Set Thermometer start?',`Point A: ${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}${origin.accuracy_m?`\nGPS reported accuracy ±${Math.round(origin.accuracy_m)} m.`:'\nManual map location.'}\n\nThis replaces the current active Thermometer start point.`,'Set start'); if(!ok)return;
-    const {error}=await state.supabase.rpc('add_thermo_reference_v3',{p_game_id:state.game.id,p_lat:origin.lat,p_lng:origin.lng,p_accuracy_m:origin.accuracy_m,p_source:origin.source}); if(error)throw error; await reloadGameState();
+    if(card.kind==='tentacle'){
+      if(state.previewQuestionSlot===card.slot&&state.previewQuestionCard?.pois){
+        const pois=state.previewQuestionCard.pois;
+        const payload={slot_key:card.slot,question_kind:'tentacle',title:card.title,poi_type:card.poi_type,valid_distance_m:TENTACLE_VALID_DISTANCE_M,pois};
+        const ok=await confirmAction(`Ask ${card.title} Tentacle?`,`${pois.length} candidate ${card.title.toLowerCase()} are highlighted on the map.\n\nSend this Tentacle question now?`,`Ask Tentacle`);
+        if(!ok){cancelQuestionPreview();renderQuestionDeck();return;}
+        const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'tentacle',p_payload:payload});if(error)throw error;
+        cancelQuestionPreview();await reloadGameState();return;
+      }
+      toast(`Loading ${card.title} reference data…`,3000);
+      const all=await loadPoiType(card.poi_type);const candidates=all.filter(p=>pointInPossible(p));
+      const pois=candidates.map(p=>({id:p.properties.poiId,name:p.properties.poiName,lat:p.geometry.coordinates[1],lng:p.geometry.coordinates[0]}));
+      state.previewQuestionSlot=card.slot;state.previewQuestionCard={...card,pois};showPoiPreview(pois);renderQuestionDeck();
+      toast(`${pois.length} ${card.title.toLowerCase()} highlighted. Tap the same Tentacle again to ask it, or choose another question to cancel.` ,5500);return;
+    }
+
+    if(card.kind==='photo'){
+      cancelQuestionPreview();
+      const payload={slot_key:card.slot,question_kind:'photo',title:card.title,photo_prompt:card.photo_prompt};
+      await askQuestionPayload(card,payload,`Photo question: ${card.photo_prompt}\n\nThe Hider will upload one image from the camera roll.`);return;
+    }
+
+    if(card.kind==='thermometer'){
+      const ref=state.thermoReferences?.[card.slot]||null;
+      const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
+      if(!ref){
+        const ok=await confirmAction(`Start ${card.title}?`,`Point A: ${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}${origin.accuracy_m?`\nGPS accuracy ±${Math.round(origin.accuracy_m)} m.`:'\nManual map location.'}\n\nThe card will turn red while you move ${formatDistance(card.min_travel_m)}. Once you are far enough it turns green; tap it again to ask the Thermometer.`,`Start Thermometer`);
+        if(!ok)return;
+        const {error}=await state.supabase.rpc('start_thermometer_v1',{p_game_id:state.game.id,p_slot_key:card.slot,p_min_travel_m:card.min_travel_m,p_lat:origin.lat,p_lng:origin.lng,p_accuracy_m:origin.accuracy_m??null,p_source:origin.source||'gps'});if(error)throw error;
+        cancelQuestionPreview();await reloadGameState();return;
+      }
+      const travelled=turf.distance(turf.point([Number(ref.lng),Number(ref.lat)]),turf.point([origin.lng,origin.lat]),{units:'meters'});
+      if(travelled+0.5<card.min_travel_m){renderQuestionDeck();return toast(`${card.title} is armed. You have moved ${Math.round(travelled)} m; ${Math.round(card.min_travel_m-travelled)} m remain.`);}
+      const payload={slot_key:card.slot,question_kind:'thermometer',title:card.title,origin,from:{lat:Number(ref.lat),lng:Number(ref.lng)},to:{lat:origin.lat,lng:origin.lng},min_travel_m:card.min_travel_m};
+      previewQuestionGeometry(payload);state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;
+      const desc=`${card.title}\nTravelled: ${Math.round(travelled)} m\n\nThe yellow perpendicular bisector is the exact line that will divide the map into WARMER/COLDER halves.`;
+      const sent=await askQuestionPayload(card,payload,desc);if(!sent){state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;renderQuestionDeck();}return;
+    }
+
+    const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
+    let payload={slot_key:card.slot,question_kind:card.kind,title:card.title,origin};let description=`${card.title}\nOrigin: ${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}${origin.accuracy_m?` · GPS ±${Math.round(origin.accuracy_m)} m`:' · manual'}`;
+    if(card.kind==='radar'){
+      payload.center={lat:origin.lat,lng:origin.lng};payload.radius_m=card.radius_m;previewQuestionGeometry(payload);
+      if(origin.accuracy_m&&origin.accuracy_m>Math.max(25,card.radius_m/2))description+=`\nWARNING: GPS accuracy (±${Math.round(origin.accuracy_m)} m) is poor relative to this Radar radius.`;
+    }else if(card.kind==='district'){
+      const d=pointDistrict(turf.point([origin.lng,origin.lat]));if(!d)return toast('This question origin is outside Vienna.');payload.district_number=d.number;payload.district_name=d.name;description+=`\nDistrict: ${d.number}. ${d.name}`;previewQuestionGeometry(payload);
+    }
+    state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;
+    const sent=await askQuestionPayload(card,payload,description);if(!sent){state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;renderQuestionDeck();}
   }
 
   async function loadPoiType(type){
@@ -749,11 +806,24 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
     state.mapLayers.poiPreview=L.geoJSON(fc,{pointToLayer:(f,ll)=>L.marker(ll,{icon:L.divIcon({className:'poi-dot',iconSize:[11,11]})}),onEachFeature:(f,l)=>l.bindTooltip(f.properties.name)}).addTo(state.gameMap);
   }
   function clearPoiPreview(){state.mapLayers.poiPreview?.remove();state.mapLayers.poiReach?.remove();state.mapLayers.poiPreview=null;state.mapLayers.poiReach=null;}
-  function clearPendingOverlay(){state.mapLayers.pendingCircle?.remove();state.mapLayers.pendingLine?.remove();state.mapLayers.pendingTentacleCell?.remove();state.mapLayers.pendingCircle=null;state.mapLayers.pendingLine=null;state.mapLayers.pendingTentacleCell=null;}
+  function clearPendingOverlay(){
+    ['pendingCircle','pendingLine','pendingDistrict','pendingBisector','pendingThermoPath','pendingTentacleCell'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
+  }
+  function thermometerBisectorLine(from,to){
+    const A=mercator(from.lat,from.lng),B=mercator(to.lat,to.lng);const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy);if(len<1)return null;
+    const tx=-dy/len,ty=dx/len,M={x:(A.x+B.x)/2,y:(A.y+B.y)/2},L=150000;return [unmercator({x:M.x+tx*L,y:M.y+ty*L}),unmercator({x:M.x-tx*L,y:M.y-ty*L})];
+  }
   function previewQuestionGeometry(p){
     clearPendingOverlay();
-    if(p.question_kind==='radar')state.mapLayers.pendingCircle=L.circle([p.center.lat,p.center.lng],{radius:p.radius_m,color:'#f59e0b',weight:2,dashArray:'6 5',fillOpacity:.04}).addTo(state.gameMap);
-    if(p.question_kind==='thermometer')state.mapLayers.pendingLine=L.polyline([[p.from.lat,p.from.lng],[p.to.lat,p.to.lng]],{color:'#f59e0b',weight:3,dashArray:'6 5'}).addTo(state.gameMap);
+    if(p.question_kind==='radar')state.mapLayers.pendingCircle=L.circle([p.center.lat,p.center.lng],{radius:p.radius_m,color:'#f59e0b',weight:3,dashArray:'7 5',fillColor:'#f59e0b',fillOpacity:.13}).addTo(state.gameMap);
+    if(p.question_kind==='district'){
+      const d=state.mapData?.districts?.find(x=>x.number===Number(p.district_number));
+      if(d)state.mapLayers.pendingDistrict=L.geoJSON(d.feature,{style:{color:'#f59e0b',weight:3,dashArray:'7 5',fillColor:'#f59e0b',fillOpacity:.15},interactive:false}).addTo(state.gameMap);
+    }
+    if(p.question_kind==='thermometer'){
+      state.mapLayers.pendingThermoPath=L.polyline([[p.from.lat,p.from.lng],[p.to.lat,p.to.lng]],{color:'#fbbf24',weight:2,dashArray:'4 6',opacity:.8}).addTo(state.gameMap);
+      const line=thermometerBisectorLine(p.from,p.to);if(line)state.mapLayers.pendingBisector=L.polyline(line.map(x=>[x.lat,x.lng]),{color:'#f59e0b',weight:4,dashArray:'8 5',opacity:.95}).addTo(state.gameMap);
+    }
   }
 
   function actionMap(){return new Map(state.actions.map(a=>[a.id,a]));}
@@ -784,8 +854,8 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
   }
 
   async function answerBoolean(q,value){
-    const s=suggestedAnswer(q); const ok=await confirmAction(`Send ${value?'YES':'NO'}?`,`${questionLabel(q)}\n\nAutomatic hider preview: ${s?.text||'Unavailable'}\n\nYou are still choosing the final answer manually.`,`Send ${value?'YES':'NO'}`);if(!ok)return;
-    const {error}=await state.supabase.rpc('answer_question_v3',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:{type:'boolean',value}});if(error)throw error;await reloadGameState();
+    const s=suggestedAnswer(q),pen=currentQuestionPenaltyMinutes(q); const ok=await confirmAction(`Send ${value?'YES':'NO'}?`,`${questionLabel(q)}\n\nAutomatic hider preview: ${s?.text||'Unavailable'}${pen?`\n\nCurrent late penalty: −${pen} min`:''}\n\nYou are still choosing the final answer manually.`,`Send ${value?'YES':'NO'}`);if(!ok)return;
+    const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:{type:'boolean',value}});if(error)throw error;await reloadGameState();
   }
   async function answerTentacle(q){
     const s=suggestedAnswer(q); if(s?.status!=='poi'||!s.poi)return toast('This Tentacle does not currently have a valid POI answer.');
@@ -797,8 +867,8 @@ Hider is closest to ${s.poi.name}.
 
 Automatic private check: ${s.text}
 
-Only the POI name is sent publicly; the private validation distance is never included in the answer.`,`Send answer`);if(!ok)return;
-    const {error}=await state.supabase.rpc('answer_question_v3',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
+Only the POI name is sent publicly; the private validation distance is never included in the answer.${currentQuestionPenaltyMinutes(q)?`\n\nCurrent late penalty: −${currentQuestionPenaltyMinutes(q)} min`:''}`,`Send answer`);if(!ok)return;
+    const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
   async function autoVetoTentacle(q){
     const s=suggestedAnswer(q); if(s?.status!=='auto_veto')return toast('This Tentacle has a valid POI answer and should not be automatically vetoed.');
@@ -806,35 +876,63 @@ Only the POI name is sent publicly; the private validation distance is never inc
 
 ${s.text}
 
-This does not consume a Veto card and awards no card draw. Seekers will only be told that the Tentacle was automatically vetoed because no listed option was within ${Number(q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of the target.`,`Veto Tentacle`,true);if(!ok)return;
-    const {error}=await state.supabase.rpc('auto_veto_tentacle_v3',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword});if(error)throw error;await reloadGameState();
+This does not consume a Veto card and awards no card draw. Seekers will only be told that the Tentacle was automatically vetoed because no listed option was within ${Number(q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of the target.${currentQuestionPenaltyMinutes(q)?`\n\nCurrent late penalty: −${currentQuestionPenaltyMinutes(q)} min`:''}`,`Veto Tentacle`,true);if(!ok)return;
+    const {error}=await state.supabase.rpc('auto_veto_tentacle_v4',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword});if(error)throw error;await reloadGameState();
   }
+
+  function photoExtension(file){
+    const name=String(file?.name||'').toLowerCase();const ext=name.includes('.')?name.split('.').pop():'';
+    if(['jpg','jpeg','png','webp','heic','heif'].includes(ext))return ext==='jpeg'?'jpg':ext;
+    const type=String(file?.type||'');if(type==='image/png')return'png';if(type==='image/webp')return'webp';if(type==='image/heic')return'heic';if(type==='image/heif')return'heif';return'jpg';
+  }
+  function photoMime(file){const type=String(file?.type||'');if(type.startsWith('image/'))return type;const ext=photoExtension(file);return ext==='png'?'image/png':ext==='webp'?'image/webp':ext==='heic'?'image/heic':ext==='heif'?'image/heif':'image/jpeg';}
+  async function uploadPhotoAnswer(q,file){
+    if(!file)return toast('Choose a photo first.');
+    if(file.type&&!String(file.type).startsWith('image/'))return toast('Please choose an image file.');
+    if(file.size>25*1024*1024)return toast('Photo is larger than the 25 MB upload limit.');
+    const penalty=currentQuestionPenaltyMinutes(q);
+    const ok=await confirmAction('Send this photo?',`${questionLabel(q)}\n\n${file.name||'Selected image'} · ${(file.size/1024/1024).toFixed(1)} MB${penalty?`\nCurrent late-answer penalty: −${penalty} min`:''}\n\nThe original image will be uploaded and becomes visible to the seekers in the activity log.`,`Upload & send`);if(!ok)return;
+    const {data:path,error:ticketErr}=await state.supabase.rpc('create_photo_upload_ticket_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_extension:photoExtension(file)});if(ticketErr)throw ticketErr;if(!path)throw new Error('Could not create a photo upload ticket.');
+    const {error:upErr}=await state.supabase.storage.from('game-photos').upload(path,file,{cacheControl:'3600',upsert:false,contentType:photoMime(file)});if(upErr)throw upErr;
+    const answer={type:'photo',photo_path:path,filename:file.name||'photo',mime_type:file.type||null,size_bytes:file.size,prompt:q.payload?.photo_prompt||q.payload?.title||'Photo'};
+    const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;
+    const old=state.photoPreviewUrls.get(q.id);if(old)URL.revokeObjectURL(old);state.photoPreviewUrls.delete(q.id);state.photoFiles.delete(q.id);await reloadGameState();
+  }
+  async function signedPhotoUrl(path){
+    if(!path)return null;const cached=state.photoUrlCache.get(path);if(cached&&cached.expires>Date.now()+30000)return cached.url;
+    const {data,error}=await state.supabase.storage.from('game-photos').createSignedUrl(path,3600);if(error)throw error;
+    const url=data?.signedUrl||null;if(url)state.photoUrlCache.set(path,{url,expires:Date.now()+3500*1000});return url;
+  }
+  async function hydratePhotoMedia(){
+    const nodes=[...document.querySelectorAll('[data-photo-path]')];
+    await Promise.all(nodes.map(async el=>{const path=el.dataset.photoPath;if(!path)return;try{const url=await signedPhotoUrl(path);if(!url)return;if(el.tagName==='IMG')el.src=url;else{const img=el.querySelector('img');if(img)img.src=url;el.onclick=()=>openPhotoModal(url,el.dataset.photoTitle||'Photo answer');}}catch(e){console.warn('Photo load failed',e);}}));
+  }
+  function openPhotoModal(url,title='Photo answer'){$('photoModalTitle').textContent=title;$('photoModalImage').src=url;$('photoModal').classList.remove('hidden');}
+  function closePhotoModal(){$('photoModal').classList.add('hidden');$('photoModalImage').removeAttribute('src');}
 
   function availableHandCards(effectKey=null){
     const cards=[]; for(const d of state.hiderDraws){if(!drawIsEarned(d))continue;const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]);for(const c of d.cards||[])if(kept.has(c.card_key)&&!used.has(c.card_key)&&(!effectKey||c.effect_key===effectKey))cards.push({...c,draw_id:d.id});} return cards;
   }
   async function vetoQuestion(q){
-    const veto=availableHandCards('veto_question')[0];if(!veto)return toast('No unused Veto Question card is in your hand.');const ok=await confirmAction('Veto this question?',`${questionLabel(q)}\n\nThis consumes ${veto.title}. No answer is sent and this question remains used/greyed out.`,'Use veto',true);if(!ok)return;
-    const {error}=await state.supabase.rpc('veto_question_v3',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_card_key:veto.card_key});if(error)throw error;await reloadGameState();
+    const veto=availableHandCards('veto_question')[0];if(!veto)return toast('No unused Veto Question card is in your hand.');
+    const pen=currentQuestionPenaltyMinutes(q);const ok=await confirmAction('Veto this question?',`${questionLabel(q)}
+
+This consumes ${veto.title}. No answer is sent and this question remains used/greyed out.${pen?`
+
+Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
+    const {error}=await state.supabase.rpc('veto_question_v4',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_card_key:veto.card_key});if(error)throw error;await reloadGameState();
   }
 
   async function toggleKeepCard(draw,cardKey,active){const c=draw.cards.find(x=>x.card_key===cardKey);const ok=await confirmAction(`${active?'Keep':'Undo keep'} card?`,`${c?.title||cardKey}\n${c?.description||''}\n\nThis draw lets you keep ${draw.keep_limit} card${draw.keep_limit===1?'':'s'}.`,active?'Keep card':'Undo keep',!active);if(!ok)return;const {error}=await state.supabase.rpc('toggle_keep_card_v3',{p_game_id:state.game.id,p_draw_id:draw.id,p_password:state.hiderPassword,p_card_key:cardKey,p_active:active});if(error)throw error;await reloadGameState();}
 
-  async function playHandCard(card){
-    if(card.card_kind==='time_bonus')return toast('Time-bonus cards stay in your hand and are added to the final score.');
-    if(card.effect_key==='veto_question')return toast('Use the Veto button on a pending question.');
-    if(card.effect_key==='time_trap'){state.trapPlacementCard=card;toast('Tap a station marker on the map to place this Time Trap.');return;}
-    if(card.effect_key==='duplicate'){await useDuplicate(card);return;}
-    const duration=card.duration_seconds?`\nA synchronized ${formatDuration(card.duration_seconds)} timer will start.`:'';const extra=card.effect_key==='prosperous_home'?`\nThis implementation doubles the final hiding AREA: 250 m radius → ${(BASE_HIDE_RADIUS_M*Math.sqrt(2)).toFixed(1)} m radius.`:'';
-    const ok=await confirmAction(`Play ${card.title}?`,`${card.description}${duration}${extra}`,'Play card');if(!ok)return;
-    const {error}=await state.supabase.rpc('play_card_v3',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null});if(error)throw error;await reloadGameState();
-  }
+  async function discardHeldCard(card){const ok=await confirmAction('Discard this card?',`${card.title}\n\nIt leaves your hand and goes to the discard pile until a future reshuffle.`,'Discard',true);if(!ok)return;const {error}=await state.supabase.rpc('discard_held_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();}
 
-  async function useDuplicate(card){
-    const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));if(!targets.length)return toast('Duplicate currently needs another held time bonus or curse card.');
-    const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');const raw=window.prompt(`Choose the card Duplicate should copy:\n${choices}`);if(!raw)return;const idx=Number(raw)-1;if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid Duplicate choice.');const target=targets[idx];const ok=await confirmAction('Use Duplicate?',`Duplicate will copy “${target.title}”. The original ${target.title} remains in your hand; Duplicate is consumed.`,'Use Duplicate');if(!ok)return;
-    const {error}=await state.supabase.rpc('play_card_v3',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key});if(error)throw error;await reloadGameState();
-  }
+  function chooseCastingCost(card){const cost=Number(card.cast_cost_minutes||0);if(cost<=0)return Promise.resolve([]);const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus');if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castModal').classList.remove('hidden');});}
+  function closeCastModal(value){$('castModal').classList.add('hidden');const r=state.castResolver;state.castResolver=null;state.castCard=null;r?.(value);}
+
+  async function playHandCard(card){if(card.card_kind==='time_bonus')return toast('Time-bonus cards are held for scoring or casting costs.');if(card.effect_key==='veto_question')return toast('Use the Veto button on a pending question.');if(card.effect_key==='time_trap'){state.trapPlacementCard=card;toast('Tap a station marker on the map to place this Time Trap.');return;}if(card.effect_key==='duplicate'){await useDuplicate(card);return;}const costKeys=await chooseCastingCost(card);if(costKeys===null)return;const duration=card.duration_seconds?`\nA synchronized ${formatDuration(card.duration_seconds)} timer will start.`:'';const extra=card.effect_key==='prosperous_home'?`\nThis implementation doubles the final hiding AREA: 250 m radius → ${(BASE_HIDE_RADIUS_M*Math.sqrt(2)).toFixed(1)} m radius.`:'';const cost=Number(card.cast_cost_minutes||0);const costText=cost?`\nCasting cost: ${cost} min of selected time-bonus cards.`:'';const ok=await confirmAction(`Play ${card.title}?`,`${card.description}${duration}${extra}${costText}`,'Play card');if(!ok)return;const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();}
+
+  async function useDuplicate(card){const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));if(!targets.length)return toast('Duplicate currently needs another held time bonus or curse card.');const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');const raw=window.prompt(`Choose the card Duplicate should copy:\n${choices}`);if(!raw)return;const idx=Number(raw)-1;if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid Duplicate choice.');const target=targets[idx];let costKeys=[];if(target.card_kind==='curse'){costKeys=await chooseCastingCost(target);if(costKeys===null)return;}const ok=await confirmAction('Use Duplicate?',`Duplicate will copy “${target.title}”. The original remains in your hand; Duplicate is consumed.${Number(target.cast_cost_minutes||0)?`\nCasting cost: ${target.cast_cost_minutes} min.`:''}`,'Use Duplicate');if(!ok)return;const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();}
 
   async function placeTimeTrapAtStation(feature){
     const card=state.trapPlacementCard;if(!card)return;state.trapPlacementCard=null;const [lng,lat]=feature.geometry.coordinates;const ok=await confirmAction('Place Time Trap here?',`Station: ${feature.properties.stationName}\n\nThe trap placement remains secret from seekers until it is triggered. Its value starts at the card's base bonus and increases by 10 minutes per full hour armed.`,'Place trap');if(!ok)return;
@@ -891,20 +989,26 @@ From the next question onward, automatic answer previews use this actual locatio
 
   async function reloadActions(){const {data,error}=await state.supabase.from('game_actions').select('*').eq('game_id',state.game.id).order('created_at',{ascending:true});if(error)throw error;state.actions=data||[];}
   async function reloadHiderPrivate(){
-    if(state.role!=='hider'){state.hiderDraws=[];state.timeTraps=[];state.privateCardUses=[];return;}
-    const [d,t,u]=await Promise.all([
+    if(state.role!=='hider'){state.hiderDraws=[];state.timeTraps=[];state.privateCardUses=[];state.seekerLivePosition=null;state.deckStatus=null;return;}
+    const [d,t,u,l,ds]=await Promise.all([
       state.supabase.rpc('get_hider_draws_v3',{p_game_id:state.game.id,p_password:state.hiderPassword}),
       state.supabase.rpc('get_time_traps_v3',{p_game_id:state.game.id,p_password:state.hiderPassword}),
-      state.supabase.rpc('get_private_card_uses_v3',{p_game_id:state.game.id,p_password:state.hiderPassword})
-    ]); if(d.error)throw d.error;if(t.error)throw t.error;if(u.error)throw u.error;
-    state.hiderDraws=(d.data||[]).map(r=>({...r,cards:Array.isArray(r.cards)?r.cards:[],kept_card_keys:Array.isArray(r.kept_card_keys)?r.kept_card_keys:[],used_card_keys:Array.isArray(r.used_card_keys)?r.used_card_keys:[]}));state.timeTraps=t.data||[];state.privateCardUses=u.data||[];
+      state.supabase.rpc('get_private_card_uses_v3',{p_game_id:state.game.id,p_password:state.hiderPassword}),
+      state.supabase.rpc('get_seeker_live_position_v1',{p_game_id:state.game.id,p_password:state.hiderPassword}),
+      state.supabase.rpc('get_card_deck_status_v1',{p_game_id:state.game.id,p_password:state.hiderPassword})
+    ]); if(d.error)throw d.error;if(t.error)throw t.error;if(u.error)throw u.error;if(l.error)throw l.error;if(ds.error)throw ds.error;
+    state.hiderDraws=(d.data||[]).map(r=>({...r,cards:Array.isArray(r.cards)?r.cards:[],kept_card_keys:Array.isArray(r.kept_card_keys)?r.kept_card_keys:[],used_card_keys:Array.isArray(r.used_card_keys)?r.used_card_keys:[]}));state.timeTraps=t.data||[];state.privateCardUses=u.data||[];state.seekerLivePosition=(l.data||[])[0]||null;state.deckStatus=(ds.data||[])[0]||null;
   }
-  async function reloadGameState(){await reloadActions();if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();deriveLocalState();await recomputePossibleArea();renderAll();}
+  async function reloadGamePublic(){const {data,error}=await state.supabase.from('games').select('*').eq('id',state.game.id).single();if(error)throw error;state.game={...state.game,...data};}
+  async function reloadGameState(){await reloadGamePublic();await reloadActions();if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();deriveLocalState();await recomputePossibleArea();renderAll();}
 
   function deriveLocalState(){
     const questions=effectiveActions('question').sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));const q=questions[0];if(q?.payload?.origin)setSeekerPointDisplay(q.payload.origin);else setSeekerPointDisplay(null);
-    const ref=latestAction('thermo_reference');if(ref){state.thermoReference=turf.point([Number(ref.payload.lng),Number(ref.payload.lat)]);$('thermoStatus').textContent=`${Number(ref.payload.lat).toFixed(4)}, ${Number(ref.payload.lng).toFixed(4)}`;}else{state.thermoReference=null;$('thermoStatus').textContent='None';}
-    renderHiderSecret(); renderPendingQuestionOverlay();
+    state.thermoReferences={};
+    for(const ref of effectiveActions('thermo_reference').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at))){
+      const slot=ref.payload?.slot_key;if(slot)state.thermoReferences[slot]={...ref.payload,action_id:ref.id,created_at:ref.created_at};
+    }
+    renderHiderSecret();renderPendingQuestionOverlay();
   }
 
   function currentAreaMultiplier(){const p=effectiveActions('curse_play').filter(a=>a.payload?.effect_key==='prosperous_home');return Math.pow(2,p.length);}
@@ -956,7 +1060,11 @@ From the next question onward, automatic answer previews use this actual locatio
     state.mapLayers['game-rails']?.bringToFront?.();state.mapLayers['game-stations']?.bringToFront?.();
   }
 
+  function clearPrivateMapLayers(){['hiderStation','hiderSpot','hiderZone','seekerLive','seekerLiveAccuracy'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});}
+  function renderSeekerLiveForHider(){state.mapLayers.seekerLive?.remove();state.mapLayers.seekerLiveAccuracy?.remove();state.mapLayers.seekerLive=null;state.mapLayers.seekerLiveAccuracy=null;const el=$('hiderSeekerLiveStatus');if(!el)return;if(state.role!=='hider'||!state.seekerLivePosition){el.textContent='No seeker GPS position has been published yet.';return;}const p=state.seekerLivePosition;const age=Math.max(0,Math.round((serverNowMs()-new Date(p.updated_at).getTime())/60000));el.textContent=`${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)} · GPS ±${Math.round(Number(p.accuracy_m||0))} m · updated ${age} min ago`;state.mapLayers.seekerLive=L.marker([Number(p.lat),Number(p.lng)],{icon:L.divIcon({className:'seeker-live-marker',html:'<span>S</span>',iconSize:[24,24]})}).addTo(state.gameMap).bindTooltip('Latest seeker GPS');if(Number(p.accuracy_m)>0)state.mapLayers.seekerLiveAccuracy=L.circle([Number(p.lat),Number(p.lng)],{radius:Number(p.accuracy_m),color:'#0f766e',weight:1,dashArray:'4 4',fillOpacity:.04}).addTo(state.gameMap);}
+
   function renderHiderSecret(){
+    ['hiderStation','hiderSpot','hiderZone'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
     if(state.role!=='hider'||!state.secret)return;
     const [slng,slat]=state.secret.station.geometry.coordinates;const phase=state.secret.endgame?'<span class="phase-endgame">ENDGAME / actual spot</span>':'<span class="phase-station">STATION PHASE</span>';
     const hiddenText=state.secret.endgame&&state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'<br>Final hiding coordinate is not needed until you decide the seekers have reached the correct station.';
@@ -977,10 +1085,25 @@ From the next question onward, automatic answer previews use this actual locatio
     }
   }
 
+  function thermometerProgress(card){
+    const ref=state.thermoReferences?.[card.slot];if(!ref)return null;
+    let travelled=null;if(state.role==='seeker'&&state.currentPosition){try{travelled=turf.distance(turf.point([Number(ref.lng),Number(ref.lat)]),turf.point([state.currentPosition.lng,state.currentPosition.lat]),{units:'meters'});}catch(_){}}
+    return {ref,travelled,ready:Number.isFinite(travelled)&&travelled+0.5>=Number(card.min_travel_m)};
+  }
   function renderQuestionDeck(){
     const used=new Set(effectiveActions('question').map(a=>a.payload?.slot_key));$('questionDeckStatus').textContent=`${used.size}/${QUESTION_CARDS.length} asked`;
-    $('questionDeck').innerHTML=QUESTION_CARDS.map(c=>{const isUsed=used.has(c.slot),disabled=state.role!=='seeker'||isUsed;return `<button class="question-card-button ${isUsed?'used':''} ${state.role==='hider'?'hider-view':''}" data-question-slot="${c.slot}" ${disabled?'disabled':''}><div><div class="q-category">${c.category}</div><div class="q-title">${escapeHtml(c.title)}</div><div class="q-detail">${escapeHtml(c.detail)}</div></div><div class="q-state">${isUsed?'Asked':(state.role==='seeker'?'Available':'Not asked')}</div></button>`;}).join('');
-    $('questionDeck').querySelectorAll('[data-question-slot]').forEach(b=>b.addEventListener('click',()=>{const c=QUESTION_CARDS.find(x=>x.slot===b.dataset.questionSlot);if(c)chooseQuestionOrigin(c).catch(handleError);}));
+    const groups=[['MIXED','Mixed'],['RADAR','Radars'],['THERMOMETER','Thermometers'],['TENTACLES','Tentacles'],['PHOTO','Photo questions']];
+    $('questionDeck').innerHTML=groups.map(([key,label])=>{
+      const cards=QUESTION_CARDS.filter(c=>c.category===key);if(!cards.length)return'';
+      const html=cards.map(c=>{
+        const isUsed=used.has(c.slot),disabled=state.role!=='seeker'||isUsed,preview=state.previewQuestionSlot===c.slot;let extra='',qstate=isUsed?'Asked':(state.role==='seeker'?'Available':'Not asked');
+        if(c.kind==='thermometer'&&!isUsed){const prog=thermometerProgress(c);if(prog){if(state.role==='seeker'&&prog.ready){extra='thermo-ready';qstate=`Ready · moved ${Math.round(prog.travelled)} m`; }else{extra='thermo-armed';qstate=state.role==='seeker'&&Number.isFinite(prog.travelled)?`Armed · ${Math.round(prog.travelled)}/${c.min_travel_m} m`:'Armed';}}}
+        if(preview)extra+=` preview-active`;
+        return `<button class="question-card-button ${isUsed?'used':''} ${state.role==='hider'?'hider-view':''} ${extra}" data-question-slot="${c.slot}" ${disabled?'disabled':''}><div><div class="q-category">${escapeHtml(c.category)}</div><div class="q-title">${escapeHtml(c.title)}</div><div class="q-detail">${escapeHtml(c.detail)}</div></div><div class="q-state">${escapeHtml(qstate)}</div></button>`;
+      }).join('');
+      return `<section class="question-group"><div class="question-group-title">${label}</div><div class="question-group-grid">${html}</div></section>`;
+    }).join('');
+    $('questionDeck').querySelectorAll('[data-question-slot]').forEach(b=>b.addEventListener('click',()=>{const c=QUESTION_CARDS.find(x=>x.slot===b.dataset.questionSlot);if(c)handleQuestionCard(c).catch(handleError);}));
   }
 
   function showTentacleCellPreview(q,poi){
@@ -995,23 +1118,53 @@ From the next question onward, automatic answer previews use this actual locatio
     clearPendingOverlay();clearPoiPreview();if(state.role!=='hider')return;const pending=effectiveActions('question').filter(q=>!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const q=pending[pending.length-1];if(!q)return;const p=q.payload||{};if(p.question_kind==='tentacle'){showPoiPreview(p.pois||[]);const s=suggestedAnswer(q);if(s?.status==='poi')showTentacleCellPreview(q,s.poi);}else previewQuestionGeometry(p);
   }
 
+  function currentQuestionPenaltyMinutes(q,nowMs=serverNowMs()){
+    const asked=new Date(q.created_at).getTime();if(!Number.isFinite(asked))return 0;const late=Math.max(0,(nowMs-asked)/1000-900);return late>=600?Math.floor(late/600)*20:0;
+  }
+  function questionDeadlineText(q,nowMs=serverNowMs()){
+    const asked=new Date(q.created_at).getTime(),due=asked+15*60*1000,delta=due-nowMs;
+    if(delta>=0)return {text:`${formatCountdown(Math.ceil(delta/1000))} to answer`,cls:'deadline-ok',penalty:0};
+    const overdue=Math.ceil(-delta/1000),penalty=currentQuestionPenaltyMinutes(q,nowMs);return {text:penalty?`OVERDUE ${formatCountdown(overdue)} · −${penalty} min`:`OVERDUE ${formatCountdown(overdue)} · first −20 min at 10:00 late`,cls:'deadline-overdue',penalty};
+  }
+  function renderAnswerDeadlines(){
+    document.querySelectorAll('[data-question-deadline]').forEach(el=>{const q=state.actions.find(a=>a.id===el.dataset.questionDeadline);if(!q)return;const d=questionDeadlineText(q);el.textContent=d.text;el.className=`answer-deadline ${d.cls}`;});
+  }
+
   function renderPendingQuestions(){
-    if(state.role!=='hider')return;const pending=effectiveActions('question').filter(q=>!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const hasVeto=availableHandCards('veto_question').length>0;
-    $('pendingQuestions').innerHTML=pending.length?pending.map(q=>{const s=suggestedAnswer(q);let controls='';if(q.payload?.question_kind==='tentacle'){if(s?.status==='auto_veto'){controls=`<button class="danger full" data-auto-veto-tentacle="${q.id}">Confirm automatic Tentacle veto</button>`;}else{controls=`<button class="primary full" data-send-tentacle="${q.id}">Send “Hider is closest to ${escapeHtml(s?.poi?.name||'…')}”</button>`;}}else{controls=`<div class="answer-row"><button class="primary answer-yes" data-answer-question="${q.id}" data-answer-value="true">Yes</button><button class="primary answer-no" data-answer-question="${q.id}" data-answer-value="false">No</button></div>`;}
-      return `<div class="question-item"><strong>${escapeHtml(questionLabel(q))}</strong> <span class="answer-pill pending">Pending</span><div class="meta">${new Date(q.created_at).toLocaleString()}</div><div class="suggestion"><strong>Automatic private preview</strong>${escapeHtml(s?.text||'Could not calculate.')}</div>${q.payload?.question_kind==='tentacle'?`<div class="tentacle-summary">${(q.payload.pois||[]).length} candidate POIs from the remaining zone. Valid only if the private target is within ${Number(q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of at least one.</div>`:''}${controls}${hasVeto?`<button class="danger full small" data-veto-question="${q.id}">Use Veto Question</button>`:''}</div>`;
+    if(state.role!=='hider')return;
+    const pending=effectiveActions('question').filter(q=>!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const hasVeto=availableHandCards('veto_question').length>0;
+    $('pendingQuestions').innerHTML=pending.length?pending.map(q=>{
+      const kind=q.payload?.question_kind,s=kind==='photo'?null:suggestedAnswer(q);let controls='';
+      if(kind==='tentacle'){
+        if(s?.status==='auto_veto')controls=`<button class="danger full" data-auto-veto-tentacle="${q.id}">Confirm automatic Tentacle veto</button>`;
+        else controls=`<button class="primary full" data-send-tentacle="${q.id}">Send “Hider is closest to ${escapeHtml(s?.poi?.name||'…')}”</button>`;
+      }else if(kind==='photo'){
+        const existing=state.photoPreviewUrls.get(q.id)||'';
+        controls=`<div class="photo-answer-box"><label class="photo-file-label">Choose photo<input type="file" accept="image/*" data-photo-input="${q.id}"></label><div class="photo-local-preview ${existing?'':'hidden'}" data-photo-preview-wrap="${q.id}"><img data-photo-preview="${q.id}" ${existing?`src="${escapeHtml(existing)}"`:''} alt="Selected photo preview"></div><button class="primary full" data-send-photo="${q.id}" ${state.photoFiles.has(q.id)?'':'disabled'}>Upload & send photo</button></div>`;
+      }else{
+        const yesLabel=kind==='thermometer'?'Warmer':'Yes',noLabel=kind==='thermometer'?'Colder':'No';
+        controls=`<div class="answer-row"><button class="primary answer-yes" data-answer-question="${q.id}" data-answer-value="true">${yesLabel}</button><button class="primary answer-no" data-answer-question="${q.id}" data-answer-value="false">${noLabel}</button></div>`;
+      }
+      const suggestion=kind==='photo'?`<div class="suggestion photo-request"><strong>Photo request</strong>${escapeHtml(q.payload?.photo_prompt||q.payload?.title||'Photo')}</div>`:`<div class="suggestion"><strong>Automatic private preview</strong>${escapeHtml(s?.text||'Could not calculate.')}</div>`;
+      return `<div class="question-item"><div class="row-between pending-question-head"><strong>${escapeHtml(questionLabel(q))}</strong><span data-question-deadline="${q.id}" class="answer-deadline"></span></div><div class="meta">Asked ${new Date(q.created_at).toLocaleString()}</div>${suggestion}${kind==='tentacle'?`<div class="tentacle-summary">${(q.payload.pois||[]).length} candidate POIs from the remaining zone. Valid only if the private target is within ${Number(q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of at least one.</div>`:''}${controls}${hasVeto?`<button class="danger tiny activity-undo" data-veto-question="${q.id}">Use Veto Question</button>`:''}</div>`;
     }).join(''):'<div class="mini-status">Nothing waiting for an answer.</div>';
+    renderAnswerDeadlines();
     $('pendingQuestions').querySelectorAll('[data-answer-question]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.answerQuestion);if(q)answerBoolean(q,b.dataset.answerValue==='true').catch(handleError);}));
     $('pendingQuestions').querySelectorAll('[data-send-tentacle]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.sendTentacle);if(q)answerTentacle(q).catch(handleError);}));
     $('pendingQuestions').querySelectorAll('[data-auto-veto-tentacle]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.autoVetoTentacle);if(q)autoVetoTentacle(q).catch(handleError);}));
     $('pendingQuestions').querySelectorAll('[data-veto-question]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.vetoQuestion);if(q)vetoQuestion(q).catch(handleError);}));
+    $('pendingQuestions').querySelectorAll('[data-photo-input]').forEach(inp=>inp.addEventListener('change',()=>{const qid=inp.dataset.photoInput,file=inp.files?.[0];if(!file)return;const old=state.photoPreviewUrls.get(qid);if(old)URL.revokeObjectURL(old);const url=URL.createObjectURL(file);state.photoPreviewUrls.set(qid,url);state.photoFiles.set(qid,file);const img=$('pendingQuestions').querySelector(`[data-photo-preview="${CSS.escape(qid)}"]`),wrap=$('pendingQuestions').querySelector(`[data-photo-preview-wrap="${CSS.escape(qid)}"]`),btn=$('pendingQuestions').querySelector(`[data-send-photo="${CSS.escape(qid)}"]`);if(img)img.src=url;if(wrap)wrap.classList.remove('hidden');if(btn)btn.disabled=false;}));
+    $('pendingQuestions').querySelectorAll('[data-send-photo]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.sendPhoto),file=state.photoFiles.get(b.dataset.sendPhoto);if(q)uploadPhotoAnswer(q,file).catch(handleError);}));
   }
 
   function drawIsEarned(d){const q=state.actions.find(a=>a.id===d.question_action_id);return q&&isActionEffective(q)&&!!activeAnswerForQuestion(q.id);}
   function renderCurseDraws(){
-    if(state.role!=='hider')return;const earned=state.hiderDraws.filter(drawIsEarned);const hand=availableHandCards();const timeBonus=hand.filter(c=>c.card_kind==='time_bonus').reduce((s,c)=>s+Number(c.value_int||0),0)+state.privateCardUses.filter(u=>u.effect_key==='duplicate_bonus'&&u.is_active).reduce((s,u)=>s+Number(u.value_int||0),0)+state.timeTraps.filter(t=>t.trigger_active).reduce((s,t)=>s+Number(t.bonus_minutes||0),0);$('bonusTotal').textContent=`${timeBonus} min held/earned`;
-    $('curseDraws').innerHTML=earned.length?earned.map(d=>{const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]),count=kept.size;return `<div class="curse-draw"><div class="curse-draw-title">Draw ${d.cards.length} · keep ${d.keep_limit} <span class="mini-status">(${count}/${d.keep_limit} selected)</span></div><div class="curse-options">${d.cards.map(c=>{const isKept=kept.has(c.card_key),isUsed=used.has(c.card_key);return `<div class="curse-option ${isKept?'kept':''} ${isUsed?'used':''}"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><p>${escapeHtml(c.description)}${c.duration_seconds?` · ${formatDuration(c.duration_seconds)}`:''}</p>${!isUsed?`<button class="secondary small keep-toggle" data-keep-card="${c.card_key}" data-draw-id="${d.id}" data-keep-active="${isKept?'false':'true'}" ${( !isKept && count>=d.keep_limit)?'disabled':''}>${isKept?'Undo keep':'Keep'}</button>`:''}${isKept&&!isUsed?`<button class="primary small" data-play-card="${c.card_key}">${c.card_kind==='time_bonus'?'Held for final score':c.effect_key==='veto_question'?'Use on pending question':c.effect_key==='time_trap'?'Place Time Trap':'Play'}</button>`:''}${isUsed?'<span class="answer-pill undone">USED</span>':''}</div>`;}).join('')}</div></div>`;}).join(''):'<div class="mini-status">No earned card draws yet.</div>';
-    $('curseDraws').querySelectorAll('[data-keep-card]').forEach(b=>b.addEventListener('click',()=>{const d=state.hiderDraws.find(x=>x.id===b.dataset.drawId);if(d)toggleKeepCard(d,b.dataset.keepCard,b.dataset.keepActive==='true').catch(handleError);}));
-    $('curseDraws').querySelectorAll('[data-play-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.playCard);if(c)playHandCard(c).catch(handleError);}));
+    if(state.role!=='hider')return;const earned=state.hiderDraws.filter(drawIsEarned);const hand=availableHandCards();const timeBonus=hand.filter(c=>c.card_kind==='time_bonus').reduce((sum,c)=>sum+Number(c.value_int||0),0)+state.privateCardUses.filter(u=>u.effect_key==='duplicate_bonus'&&u.is_active).reduce((sum,u)=>sum+Number(u.value_int||0),0)+state.timeTraps.filter(t=>t.trigger_active).reduce((sum,t)=>sum+Number(t.bonus_minutes||0),0);const deck=state.deckStatus;$('bonusTotal').textContent=`${timeBonus} min held/earned${deck?` · deck ${deck.remaining}/${deck.total} · cycle ${deck.cycle}`:''}`;
+    const unresolved=earned.filter(d=>(d.kept_card_keys||[]).length<Number(d.keep_limit||1));
+    const drawsHtml=unresolved.length?unresolved.map(d=>{const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]),count=kept.size;return `<div class="curse-draw"><div class="curse-draw-title">New draw · choose ${d.keep_limit-count} more <span class="mini-status">(${count}/${d.keep_limit} kept)</span></div><div class="curse-options">${d.cards.map(c=>{if(kept.has(c.card_key)||used.has(c.card_key))return'';return `<div class="curse-option"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><p>${escapeHtml(c.description)}${c.duration_seconds?` · ${formatDuration(c.duration_seconds)}`:''}${Number(c.cast_cost_minutes||0)?` · costs ${c.cast_cost_minutes} min to cast`:''}</p><button class="primary small keep-toggle" data-keep-card="${c.card_key}" data-draw-id="${d.id}" data-keep-active="true" ${count>=d.keep_limit?'disabled':''}>Keep</button></div>`;}).join('')}</div></div>`;}).join(''):'<div class="mini-status">No card pick is waiting.</div>';
+    const handHtml=hand.length?`<div class="hand-grid">${hand.map(c=>`<div class="hand-card"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><div class="card-meta">${escapeHtml(c.description)}${Number(c.cast_cost_minutes||0)?` · Casting cost: ${c.cast_cost_minutes} min`:''}</div><div class="hand-actions">${c.card_kind==='time_bonus'?'<span class="answer-pill pending">TIME BONUS</span>':`<button class="primary small" data-play-card="${c.card_key}">${c.effect_key==='veto_question'?'Use on question':c.effect_key==='time_trap'?'Place':'Play'}</button>`}<button class="secondary small" data-discard-card="${c.card_key}">Discard</button></div></div>`).join('')}</div>`:'<div class="mini-status">Your hand is empty.</div>';
+    $('curseDraws').innerHTML=`<div class="card-section-title">Pending picks</div>${drawsHtml}<div class="card-section-title hand-title">Current hand</div>${handHtml}`;
+    $('curseDraws').querySelectorAll('[data-keep-card]').forEach(b=>b.addEventListener('click',()=>{const d=state.hiderDraws.find(x=>x.id===b.dataset.drawId);if(d)toggleKeepCard(d,b.dataset.keepCard,true).catch(handleError);}));$('curseDraws').querySelectorAll('[data-play-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.playCard);if(c)playHandCard(c).catch(handleError);}));$('curseDraws').querySelectorAll('[data-discard-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.discardCard);if(c)discardHeldCard(c).catch(handleError);}));
   }
 
   function renderTimeTraps(){
@@ -1019,33 +1172,91 @@ From the next question onward, automatic answer previews use this actual locatio
     $('timeTraps').querySelectorAll('[data-trigger-trap]').forEach(b=>b.addEventListener('click',()=>{const t=state.timeTraps.find(x=>x.id===b.dataset.triggerTrap);if(t)triggerTimeTrap(t,b.dataset.trapActive==='true').catch(handleError);}));
   }
 
+  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route']);
+  function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){}}
+  function playCurseSound(){
+    try{
+      unlockCurseAudio();const ctx=state.audioCtx;if(!ctx||ctx.state==='suspended')return;const gain=ctx.createGain();gain.connect(ctx.destination);gain.gain.setValueAtTime(.0001,ctx.currentTime);gain.gain.exponentialRampToValueAtTime(.16,ctx.currentTime+.02);gain.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.7);
+      const o1=ctx.createOscillator(),o2=ctx.createOscillator();o1.type='sine';o2.type='triangle';o1.frequency.setValueAtTime(740,ctx.currentTime);o1.frequency.exponentialRampToValueAtTime(420,ctx.currentTime+.55);o2.frequency.setValueAtTime(1110,ctx.currentTime);o2.frequency.exponentialRampToValueAtTime(620,ctx.currentTime+.55);o1.connect(gain);o2.connect(gain);o1.start();o2.start(ctx.currentTime+.08);o1.stop(ctx.currentTime+.65);o2.stop(ctx.currentTime+.65);
+    }catch(e){console.warn('Curse sound unavailable',e);}
+  }
   function renderActiveCurses(){
     const now=serverNowMs();const all=effectiveActions().filter(a=>['curse_play','time_trap_trigger','question_veto'].includes(a.kind));const visible=all.filter(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;return !end||end>now;}).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
     $('activeCurses').innerHTML=visible.length?visible.map(a=>{if(a.kind==='question_veto')return `<div class="curse-item"><strong>${a.payload?.automatic_tentacle?'Tentacle automatically vetoed':'Question vetoed'}</strong><div class="meta">${escapeHtml(a.payload?.question_title||'A question')} ${a.payload?.automatic_tentacle?`had no qualifying option within ${Number(a.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of the hider target.`:'was vetoed.'}</div></div>`;if(a.kind==='time_trap_trigger')return `<div class="curse-item"><strong>Time Trap triggered</strong><div class="meta">${escapeHtml(a.payload?.station_name||'Station')} · +${Number(a.payload?.bonus_minutes||0)} min</div></div>`;const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-item curse-active"><strong>${escapeHtml(a.payload?.title||'Card')}</strong><div class="meta">${escapeHtml(a.payload?.description||'')}</div><div class="curse-countdown">${rem===null?'ACTIVE':formatCountdown(rem)}</div></div>`;}).join(''):'<div class="mini-status">No public card effect is active.</div>';
+
+    const strip=$('seekerCurseStrip');if(!strip)return;
+    const seekerCurses=visible.filter(a=>a.kind==='curse_play'&&SEEKER_CURSE_EFFECTS.has(a.payload?.effect_key));
+    if(state.role!=='seeker'||!seekerCurses.length){strip.classList.add('hidden');strip.innerHTML='';if(state.role!=='seeker'){state.curseSoundPrimed=false;state.seenCurseIds=new Set();}return;}
+    strip.classList.remove('hidden');strip.innerHTML=seekerCurses.map(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-chip"><span class="curse-chip-icon">⚠</span><span><strong>${escapeHtml(a.payload?.title||'Curse')}</strong><small>${rem===null?'ACTIVE':formatCountdown(rem)}</small></span></div>`;}).join('');
+    const ids=new Set(seekerCurses.map(a=>a.id));
+    if(!state.curseSoundPrimed){state.seenCurseIds=ids;state.curseSoundPrimed=true;}
+    else{
+      const incoming=seekerCurses.filter(a=>!state.seenCurseIds.has(a.id));
+      if(incoming.length){incoming.forEach(a=>state.seenCurseIds.add(a.id));playCurseSound();toast(`CURSED: ${incoming.map(a=>a.payload?.title||'Curse').join(', ')}`,5000);}
+    }
   }
 
   function canToggleAction(a){if(a.kind==='time_trap_trigger'||a.kind==='endgame_zone')return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
+  function activityQuestionName(q){
+    const p=q.payload||{};
+    if(p.question_kind==='district')return `District = ${p.district_name||p.district_number||'?'}`;
+    if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar`;
+    if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer`;
+    if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle`;
+    if(p.question_kind==='photo')return `Photo – ${p.photo_prompt||p.title||'Photo'}`;
+    return p.title||p.slot_key||'Question';
+  }
+  function rawResolutionForQuestion(id){
+    const rows=state.actions.filter(a=>a.parent_id===id&&['answer','question_veto'].includes(a.kind)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    return rows.find(a=>isActionEffective(a))||rows[0]||null;
+  }
+  function activityResolutionMarkup(q,r){
+    if(!r)return '<span class="activity-resolution pending">Pending</span>';
+    if(r.kind==='question_veto')return `<span class="activity-resolution vetoed">Vetoed</span>`;
+    const a=r.payload?.answer||{};
+    if(a.type==='photo'&&a.photo_path)return `<button class="activity-photo-thumb" data-photo-path="${escapeHtml(a.photo_path)}" data-photo-title="${escapeHtml(q.payload?.photo_prompt||'Photo answer')}"><img alt="Photo thumbnail"><span>Photo</span></button>`;
+    if(q.payload?.question_kind==='thermometer'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Warmer':'Colder'}</span>`;
+    if(a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'True':'False'}</span>`;
+    if(a.type==='tentacle'&&a.status==='poi')return `<span class="activity-resolution yes">Closest to ${escapeHtml(a.poi?.name||'POI')}</span>`;
+    return '<span class="activity-resolution">Answered</span>';
+  }
   function renderActivity(){
-    const rows=[...state.actions].filter(a=>a.kind!=='endgame_zone').reverse();$('activityHistory').innerHTML=rows.length?rows.map(a=>`<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions"><button class="${a.is_active?'danger':'secondary'} small full" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`).join(''):'<div class="mini-status">No game activity yet.</div>';
+    const entries=[
+      ...state.actions.filter(a=>a.kind==='question').map(q=>({type:'question',at:q.created_at,q})),
+      ...state.actions.filter(a=>!['question','answer','question_veto','thermo_reference','endgame_zone'].includes(a.kind)).map(a=>({type:'action',at:a.created_at,a}))
+    ].sort((x,y)=>new Date(y.at)-new Date(x.at));
+    $('activityHistory').innerHTML=entries.length?entries.map(entry=>{
+      if(entry.type==='question'){
+        const q=entry.q,r=rawResolutionForQuestion(q.id),pen=Number(r?.payload?.late_penalty_minutes||0),qEffective=isActionEffective(q),rEffective=r?isActionEffective(r):false;
+        return `<div class="activity-item grouped ${qEffective?'':'inactive'}"><div class="activity-question-line"><strong>Question – ${escapeHtml(activityQuestionName(q))}</strong>${!qEffective?' <span class="answer-pill undone">UNDONE</span>':''}${activityResolutionMarkup(q,r)}</div><div class="meta">${new Date(q.created_at).toLocaleString()}${r?` · resolved ${new Date(r.created_at).toLocaleTimeString()}${!rEffective?' · resolution undone':''}`:''}${pen?` · <strong>−${pen} min late penalty</strong>`:''}</div><div class="activity-actions compact">${canToggleAction(q)?`<button class="${q.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${q.id}" data-active="${q.is_active?'false':'true'}">${q.is_active?'Undo question':'Redo question'}</button>`:''}${r&&canToggleAction(r)?`<button class="${r.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${r.id}" data-active="${r.is_active?'false':'true'}">${r.is_active?'Undo answer':'Redo answer'}</button>`:''}</div></div>`;
+      }
+      const a=entry.a;return `<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions compact"><button class="${a.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`;
+    }).join(''):'<div class="mini-status">No game activity yet.</div>';
     $('activityHistory').querySelectorAll('[data-toggle-action]').forEach(b=>b.addEventListener('click',()=>{const a=state.actions.find(x=>x.id===b.dataset.toggleAction);if(a)setActionActive(a,b.dataset.active==='true').catch(handleError);}));
+    hydratePhotoMedia().catch(e=>console.warn(e));
   }
 
-  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();}
+  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderGameClock();}
 
-  function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} options in remaining zone`;return p.title||p.slot_key||'Question';}
-  function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;return 'ANSWER';}
+  function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} options in remaining zone`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
+  function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
   function actionLabel(a){const p=a.payload||{};if(a.kind==='question')return `Question · ${questionLabel(a)}`;if(a.kind==='answer'){const q=state.actions.find(x=>x.id===a.parent_id);return `Answer · ${q?questionLabel(q):'question'} · ${answerLabel(p.answer)}`;}if(a.kind==='thermo_reference')return `Thermometer start · ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`;if(a.kind==='curse_play')return `Card played · ${p.title||p.card_key||'Curse'}`;if(a.kind==='question_veto')return `${p.automatic_tentacle?'Automatic Tentacle veto':'Veto'} · ${p.question_title||'Question'}`;if(a.kind==='time_trap_trigger')return `Time Trap · ${p.station_name} · +${p.bonus_minutes} min`;return a.kind;}
   function formatDistance(m){return Number(m)>=1000?`${Number(m)/1000} km`:`${Number(m)} m`;}
   function formatCoord(p){return p?`${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`:'?';}
+  function gameClockSeconds(){if(!state.game)return 0;let sec=Number(state.game.clock_elapsed_seconds||0);if(state.game.clock_running&&state.game.clock_started_at)sec+=Math.max(0,(serverNowMs()-new Date(state.game.clock_started_at).getTime())/1000);return Math.floor(sec);}
+  function answerPenaltyTotal(){return effectiveActions().filter(a=>['answer','question_veto'].includes(a.kind)).reduce((sum,a)=>sum+Number(a.payload?.late_penalty_minutes||0),0);}
+  function renderGameClock(){const el=$('gameClockDisplay');if(!el||!state.game)return;const raw=gameClockSeconds(),pen=answerPenaltyTotal();el.textContent=formatCountdown(raw);el.classList.toggle('running',!!state.game.clock_running);const meta=$('gameScoreMeta');if(meta)meta.textContent=pen?`answer penalties −${pen} min · adjusted ${formatCountdown(Math.max(0,raw-pen*60))}`:'';const controls=$('gameClockControls');if(controls)controls.classList.toggle('hidden',state.role!=='hider');const start=$('startGameClockButton'),pause=$('pauseGameClockButton');if(start){start.textContent=Number(state.game.clock_elapsed_seconds||0)>0?'Resume game time':'Start game time';start.disabled=!!state.game.clock_running;}if(pause)pause.disabled=!state.game.clock_running;const status=$('gameClockStatus');if(status)status.textContent=state.game.clock_running?'Running · synchronized':'Paused';}
+  async function setGameClock(action){const title=action==='pause'?'Pause game time?':(Number(state.game.clock_elapsed_seconds||0)>0?'Resume game time?':'Start game time?');const ok=await confirmAction(title,action==='pause'?'The shared game timer will stop at its current elapsed time.':'The shared game timer will begin/resume for both Hider and Seekers.',action==='pause'?'Pause':'Start');if(!ok)return;const {error}=await state.supabase.rpc('set_game_clock_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_action:action});if(error)throw error;await reloadGameState();}
+
   function formatDuration(s){s=Number(s)||0;if(s%3600===0&&s>=3600)return`${s/3600} h`;if(s%60===0)return`${s/60} min`;return`${s} sec`;}
   function formatCountdown(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;}
 
   async function syncServerClock(){try{const before=Date.now();const {data,error}=await state.supabase.rpc('server_now');const after=Date.now();if(error)throw error;state.serverOffsetMs=new Date(data).getTime()-(before+after)/2;$('serverClockStatus').textContent='server-synced';}catch(_){state.serverOffsetMs=0;$('serverClockStatus').textContent='device clock';}}
   function serverNowMs(){return Date.now()+state.serverOffsetMs;}
-  function startTimers(){clearInterval(state.timerId);state.timerId=setInterval(()=>{if(state.game){renderActiveCurses();renderTimeTraps();}},1000);}
+  function startTimers(){clearInterval(state.timerId);state.timerId=setInterval(()=>{if(state.game){renderActiveCurses();renderTimeTraps();renderGameClock();renderAnswerDeadlines();if(state.role==='hider')renderSeekerLiveForHider();if(state.role==='seeker')renderQuestionDeck();}},1000);}
 
   function subscribeRealtime(){
-    if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';state.realtimeChannel=state.supabase.channel(`actions-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
+    if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';state.realtimeChannel=state.supabase.channel(`game-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).on('postgres_changes',{event:'UPDATE',schema:'public',table:'games',filter:`id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
   }
 
   async function hashPayload(obj){
@@ -1269,7 +1480,7 @@ ${failures.join('\n')}`,9000);
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
   function openDeveloper(){state.developerPassword=null;$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,currentPosition:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
@@ -1279,8 +1490,10 @@ ${failures.join('\n')}`,9000);
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
     $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
     document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Fresh GPS for each question':'Use the current/manual map marker';if(state.seekerOriginMode==='map')beginManualCurrentPosition();}));
-    $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('setThermoGpsButton').addEventListener('click',()=>getGps().then(p=>submitThermoReference({...p,source:'gps'})).catch(handleError));$('setThermoMapButton').addEventListener('click',()=>{state.pickMode='thermo';toast('Tap the map to set Thermometer point A.');});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your actual hiding spot with GPS or on the map, then start Endgame.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));
+    $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{stopGpsAutoTracking();state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';renderQuestionDeck();});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your actual hiding spot with GPS or on the map, then start Endgame.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));$('startGameClockButton').addEventListener('click',()=>setGameClock('start').catch(handleError));$('pauseGameClockButton').addEventListener('click',()=>setGameClock('pause').catch(handleError));$('castCancel').addEventListener('click',()=>closeCastModal(null));$('castConfirm').addEventListener('click',()=>closeCastModal([...$('castOptions').querySelectorAll('input:checked')].map(x=>x.value)));$('photoModalClose').addEventListener('click',closePhotoModal);$('photoModal').addEventListener('click',e=>{if(e.target===$('photoModal'))closePhotoModal();});
   }
 
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.gpsAutoEnabled&&Date.now()-state.lastGpsUpdateMs>=30*60*1000)refreshGpsAutoPosition();});
+  document.addEventListener('pointerdown',unlockCurseAudio,{passive:true});
   bindUi();
 })();

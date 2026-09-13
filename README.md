@@ -1,3 +1,110 @@
+# Vienna Hide & Seek v3.5.0
+
+This release builds directly on v3.4.0 and adds richer question previews, a less noisy activity log, Seeker curse alerts, photo questions, per-question answer deadlines/penalties, and a redesigned Thermometer/Tentacle workflow.
+
+## Upgrade from v3.4.0
+
+1. Run `supabase-v3.5.0-migration.sql` **once** in Supabase SQL Editor.
+2. Keep your existing working `config.js` with the `sb_publishable_...` key.
+3. Replace `app.js`, `index.html`, and `styles.css` in GitHub.
+4. Commit/push, hard-refresh, and verify **BUILD 3.5.0** in Developer mode.
+5. Existing Vienna reference datasets/chunks remain valid; do not redownload them for this update.
+
+The migration creates a private `game-photos` Supabase Storage bucket, protected one-time upload tickets, photo-read policies, new question/answer RPCs, and per-card Thermometer-start RPCs.
+
+## Question previews
+
+- **Radar:** the proposed Radar circle is filled/highlighted yellow before confirmation.
+- **Same District:** the complete current Bezirk polygon is highlighted yellow before confirmation.
+- **Thermometer:** the travel segment plus the **perpendicular bisector** used for the actual WARMER/COLDER cut are shown in yellow before sending.
+- These preview geometries depend only on Seeker-selected positions and public map/reference data; they never use the secret Hider target.
+
+## Thermometers
+
+There is no separate "Thermometer start" panel anymore. Each Thermometer card is its own two-stage control:
+
+1. First tap selects the Seeker location and asks for confirmation to start that Thermometer.
+2. The card stays **red** while the required 250 m / 500 m / 2 km has not been reached.
+3. Once the current Seeker marker is far enough away, the card turns **green**.
+4. Tapping the green card gets the current location, shows the perpendicular cut preview, and asks for confirmation before sending the question.
+
+Each Thermometer distance has its own stored starting point.
+
+## Tentacles
+
+Tentacles now use an explicit preview-first interaction:
+
+1. First tap loads the cached POI category and shows every candidate POI in the current possible area.
+2. The card is highlighted while previewing.
+3. Tap the same card again to open the Ask/Cancel confirmation.
+4. Selecting any other question cancels the Tentacle preview and removes its POI markers.
+
+Normal gameplay still reads these POIs from the shared Supabase reference cache; it does not run large live Overpass queries.
+
+## Photo questions
+
+The question deck includes:
+
+- Biggest body of water
+- Highest visible structure
+- Selfie
+- At least 4 houses in one image
+
+The Hider receives a normal pending question with a 15-minute response timer and can choose an image from the phone camera roll. The original selected file (up to 25 MB) is uploaded to a **private Supabase Storage bucket**.
+
+Uploads use a short-lived, one-time server-issued path ticket. The Hider password is checked before the ticket is issued, and the upload ticket itself is never published in the activity log. Seekers receive read access only after the uploaded path has been committed as a photo answer.
+
+The grouped Activity entry shows a thumbnail. Tapping the thumbnail opens the original uploaded image via a temporary signed URL.
+
+## Hider response deadline and penalties
+
+Every question starts its own server-timestamped response timer when the Seeker sends it:
+
+- first **15 minutes:** no penalty;
+- every **full additional 10 minutes:** `-20 min` from the eventual run time;
+- each question is calculated independently;
+- answering, manual Veto, and automatic Tentacle Veto all resolve the response timer, so a late Veto cannot bypass the penalty.
+
+The Hider pending-question panel shows a live countdown/overdue counter. The main game clock remains the raw synchronized elapsed time; a smaller line below it shows accumulated answer penalties and the currently penalty-adjusted time.
+
+## Incoming Seeker curses
+
+Active Seeker-targeting curses are shown as compact chips **directly above the map**, with one countdown per curse. Multiple simultaneous curses are all displayed.
+
+When a new curse arrives while the Seeker is in the game, the app also plays a short warning tone and shows a toast. The browser audio context is primed on user interaction; as with all browser audio, OS/browser autoplay restrictions can still suppress sound in some background/suspended states.
+
+## Activity log
+
+Question and resolution are now one grouped entry rather than two separate rows. Examples:
+
+- `Question – District = Ottakring` → `False`
+- `Question – Hospital Tentacle` → `Vetoed`
+- `Question – Photo – Biggest body of water` → photo thumbnail
+
+Thermometer-start helper actions are hidden from the public activity list. Curse/time-trap actions remain visible chronologically. Undo/Redo controls are smaller, but still use the existing confirmation popup before anything changes.
+
+## Question-menu organization
+
+Both Hider and Seeker see the same grouped structure:
+
+- Mixed
+- Radars
+- Thermometers
+- Tentacles
+- Photo questions
+
+Asked cards remain greyed out on both screens.
+
+## Retained v3.4 behavior
+
+- synchronized Start/Pause game clock;
+- ~30-minute Seeker GPS refresh while the tab is active, visible only to the Hider;
+- Hider location/station/final hiding point never exposed to Seeker mode;
+- line-coloured, zoom-aware station markers;
+- finite per-game shuffled card deck;
+- exactly 5×5 min, 4×10 min, 3×15 min, 2×20 min time-bonus cards;
+- hand/discard model and casting costs such as Express Route = 15 minutes.
+
 # Vienna Hide & Seek v3.3.4
 
 This hotfix changes reference-data refreshes to a resumable, chunked workflow. Vienna is split into a 4×4 grid (16 tiles). Each successful tile is immediately saved as its own row in the existing Supabase `reference_datasets` table. No new SQL migration is required if v3.3.0 was already installed.

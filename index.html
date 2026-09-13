@@ -7,7 +7,7 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css?v=3.3.0" />
+  <link rel="stylesheet" href="./styles.css?v=3.5.0" />
 </head>
 <body>
   <main id="app">
@@ -73,7 +73,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.3.4</div><h2>Administration &amp; reference data</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.5.0</div><h2>Administration &amp; reference data</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -100,7 +100,7 @@
                 </select>
                 <button id="developerRefreshOnePoi" class="secondary">Resume selected POI category</button>
               </div>
-              <p class="hint">v3.3.3 downloads Vienna in 16 small geographic tiles. Every successful tile is saved immediately to Supabase; if one times out, press Resume again and only missing/old tiles are retried.</p>
+              <p class="hint">Reference refreshes download Vienna in 16 small geographic tiles. Every successful tile is saved immediately to Supabase; if one times out, press Resume again and only missing/old tiles are retried.</p>
               <div id="developerReferenceList" class="reference-list"></div>
             </section>
             <section class="panel">
@@ -115,12 +115,13 @@
     <section id="gameView" class="view game-view">
       <header class="topbar game-topbar">
         <button class="icon-button" data-action="leave-game" aria-label="Back">←</button>
-        <div class="grow"><div id="roleKicker" class="eyebrow">SEEKER</div><h2 id="gameTitle">Game</h2></div>
+        <div class="grow game-title-wrap"><div><div id="roleKicker" class="eyebrow">SEEKER</div><h2 id="gameTitle">Game</h2></div><div class="game-clock-stack"><div id="gameClockDisplay" class="game-clock">0:00</div><div id="gameScoreMeta" class="game-score-meta"></div></div></div>
         <span id="syncBadge" class="badge">Connecting…</span>
       </header>
 
       <div class="game-shell">
         <div class="main-column">
+          <div id="seekerCurseStrip" class="seeker-curse-strip hidden" aria-live="assertive"></div>
           <div class="map-wrap">
             <div id="gameMap" class="map map-main"></div>
             <div class="map-legend">
@@ -131,6 +132,12 @@
             </div>
           </div>
 
+          <section id="gameClockControls" class="panel game-clock-controls hidden">
+            <div class="row-between"><div><div class="eyebrow">GAME TIME</div><h3>Shared game clock</h3></div><span id="gameClockStatus" class="mini-status">Paused</span></div>
+            <div class="location-row"><button id="startGameClockButton" class="primary">Start game time</button><button id="pauseGameClockButton" class="secondary" disabled>Pause</button></div>
+            <p class="hint">Only the Hider controls the clock. The elapsed time shown in the top bar is synchronized for both roles.</p>
+          </section>
+
           <section id="currentPositionPanel" class="panel current-position-panel">
             <div class="row-between"><div><div class="eyebrow">CURRENT POSITION</div><h3>Set your position</h3></div></div>
             <div class="location-row three">
@@ -139,7 +146,7 @@
               <button id="currentClearButton" class="secondary">Clear</button>
             </div>
             <div id="currentPositionStatus" class="status-box">No current position set.</div>
-            <p class="hint">The manual marker can be dragged. Hider positions remain local/private unless explicitly used to start Endgame. Seeker questions use this marker in manual mode.</p>
+            <p class="hint">The manual marker can be dragged. Using phone GPS enables ~30-minute refreshes while the tab remains active. Seeker GPS is visible only to the Hider; Hider GPS remains local/private unless explicitly used to start Endgame.</p>
           </section>
 
           <section id="seekerQuestionLocation" class="panel question-origin-panel hidden">
@@ -156,7 +163,7 @@
               <div><div class="eyebrow">QUESTION DECK</div><h3>Choose a question</h3></div>
               <span id="questionDeckStatus" class="mini-status"></span>
             </div>
-            <p class="hint question-menu-hint">Asked cards are greyed out on both screens. Tentacles load their POIs from the shared Vienna reference cache and preview them before the question is sent.</p>
+            <p class="hint question-menu-hint">Questions are grouped by type. Asked cards are greyed out on both screens. Radar/District/Thermometer questions preview the cut geometry; Tentacles preview every candidate POI before sending.</p>
             <div id="questionDeck" class="question-deck"></div>
           </section>
         </div>
@@ -168,17 +175,13 @@
               <div id="seekerLocationStatus" class="status-box">No question location has been sent.</div>
               <p class="hint">GPS accuracy is shown when available. Manual coordinates are intentionally accepted when underground GPS is unreliable.</p>
             </div>
-            <div class="panel compact">
-              <div class="row-between"><h3>Thermometer start</h3><span id="thermoStatus" class="mini-status">None</span></div>
-              <p class="hint">Set point A from a fresh GPS reading or map tap. A 250 m / 500 m / 2 km Thermometer can only be sent after moving at least that distance.</p>
-              <div class="location-row"><button id="setThermoGpsButton" class="secondary">Set with GPS</button><button id="setThermoMapButton" class="secondary">Set on map</button></div>
-            </div>
           </div>
 
           <div id="hiderControls" class="role-controls hidden">
             <div class="panel compact private-panel">
               <div class="row-between"><h3>Private hider phase</h3><span class="private-badge">HIDER ONLY</span></div>
               <div id="hiderSecretStatus" class="status-box"></div>
+              <div class="eyebrow seeker-tracking-label">SEEKER GPS</div><div id="hiderSeekerLiveStatus" class="status-box">No seeker GPS position has been published yet.</div>
               <button id="prepareEndgameButton" class="secondary full">Seekers reached my station — prepare Endgame</button>
               <div id="endgameLocationControls" class="hidden">
                 <p class="hint">Now choose your actual hiding location. It must lie inside the current station hiding radius and remains completely private.</p>
@@ -194,7 +197,7 @@
             </div>
             <div class="panel compact">
               <div class="row-between"><h3>Hider hand &amp; draws</h3><span id="bonusTotal" class="mini-status"></span></div>
-              <p class="hint">Radar/Thermometer: draw 2 keep 1. Tentacles: draw 4 keep 2. Known Jet Lag-style time bonuses, vetoes, Duplicate, Time Traps and curses are seeded into the deck.</p>
+              <p class="hint">Pending draws appear first. Kept cards move into your hand. The deck is finite and shuffled once; it reshuffles only after the draw pile is exhausted. You may discard held cards. Some curses require time-bonus cards as casting cost.</p>
               <div id="curseDraws" class="curse-draw-list"></div>
             </div>
             <div class="panel compact">
@@ -210,12 +213,29 @@
 
           <div class="panel compact">
             <div class="row-between"><h3>Activity</h3><span id="remainingAreaText" class="mini-status"></span></div>
-            <p class="hint">Public game actions can be undone/redone after confirmation. Secret hider operations have corresponding private controls.</p>
+            <p class="hint">Questions and answers are grouped into one compact row. Undo/redo always asks for confirmation.</p>
             <div id="activityHistory" class="question-list"></div>
           </div>
         </aside>
       </div>
     </section>
+
+    <div id="castModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="castTitle">
+      <div class="modal-card">
+        <h3 id="castTitle">Pay casting cost</h3>
+        <p>Select the time-bonus cards you want to spend. Whole cards are consumed, so overpayment is allowed.</p>
+        <div id="castOptions" class="cast-options"></div>
+        <div id="castTotal" class="status-box">Selected: 0 min</div>
+        <div class="modal-actions"><button id="castCancel" class="secondary">Cancel</button><button id="castConfirm" class="primary" disabled>Use selected bonuses</button></div>
+      </div>
+    </div>
+
+    <div id="photoModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="photoModalTitle">
+      <div class="modal-card photo-modal-card">
+        <div class="row-between"><h3 id="photoModalTitle">Photo answer</h3><button id="photoModalClose" class="icon-button" aria-label="Close photo">×</button></div>
+        <img id="photoModalImage" class="photo-full" alt="Photo answer" />
+      </div>
+    </div>
 
     <div id="confirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
       <div class="modal-card">
@@ -235,6 +255,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.3.4"></script>
+  <script src="./app.js?v=3.5.0"></script>
 </body>
 </html>
