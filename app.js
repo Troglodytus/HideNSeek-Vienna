@@ -2,6 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
+  const APP_VERSION = '3.3.2';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -23,7 +24,8 @@
   const VIENNA_TRANSIT_LINES_LAYER='OEFFLINIENOGD';
   const VIENNA_TRANSIT_STOPS_LAYER='OEFFHALTESTOGD';
   const VIENNA_UBAHN_STOPS_LAYER='UBAHNHALTOGD';
-  const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKINFOOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
+  const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKANLAGEOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
+  const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
 
   const QUESTION_CARDS = [
     { slot:'radar-20000', category:'RADAR', title:'20 km Radar', detail:'Is the target within 20 km of this location?', kind:'radar', radius_m:20000 },
@@ -105,6 +107,7 @@
     if(!key || key.includes('YOUR_') || key.includes('REPLACE_ME')) throw new Error('Add your Supabase Publishable key (sb_publishable_...) to config.js.');
     if(key.startsWith('sb_secret_')) throw new Error('Never use a Supabase secret key in this browser app. Use the sb_publishable_... key from Settings → API Keys.');
     if(key.startsWith('eyJ')) console.warn('Using a legacy anon JWT. Prefer the current sb_publishable_... key.');
+    console.info(`HideNSeek build v${APP_VERSION}`);
   }
   function initSupabaseIfNeeded() {
     if (state.supabase) return;
@@ -193,7 +196,7 @@
   }
   async function fetchViennaWfs(layer,label=layer){
     const url=wfsUrl(layer);
-    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);
+    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),25000);
     try{
       const r=await fetch(url,{cache:'no-store',signal:controller.signal});
       if(!r.ok)throw new Error(`${label}: Vienna WFS returned HTTP ${r.status}.`);
@@ -205,6 +208,20 @@
       throw e;
     }finally{clearTimeout(timer);}
   }
+  async function fetchJsonUrl(url,label,timeoutMs=25000){
+    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeoutMs);
+    try{
+      const r=await fetch(url,{cache:'no-store',signal:controller.signal,headers:{'Accept':'application/json'}});
+      if(!r.ok)throw new Error(`${label}: HTTP ${r.status}.`);
+      const data=await r.json();
+      if(!data)throw new Error(`${label}: empty JSON response.`);
+      return data;
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`${label}: request timed out.`);
+      throw e;
+    }finally{clearTimeout(timer);}
+  }
+
   function firstStringProp(props,names=[]){
     for(const k of names){const v=props?.[k];if(typeof v==='string'&&v.trim())return v.trim();}
     return '';
@@ -1042,8 +1059,16 @@ From the next question onward, automatic answer previews use this actual locatio
     return {city,districts};
   }
   async function fetchOfficialAdminData(){
-    const geo=await fetchViennaWfs(VIENNA_DISTRICTS_LAYER,'Vienna district boundaries');
-    return normalizeOfficialDistricts(geo);
+    // Prefer Vienna's official ArcGIS Feature Layer. It returns WGS84 GeoJSON directly
+    // and avoids WFS CRS/axis-order quirks that caused incomplete/invalid district refreshes.
+    try{
+      const geo=await fetchJsonUrl(VIENNA_DISTRICT_ARCGIS,'Vienna district boundaries (ArcGIS)',25000);
+      return normalizeOfficialDistricts(geo);
+    }catch(primaryError){
+      console.warn('Vienna ArcGIS district source failed; trying official WFS fallback',primaryError);
+      const geo=await fetchViennaWfs(VIENNA_DISTRICTS_LAYER,'Vienna district boundaries (WFS)');
+      return normalizeOfficialDistricts(geo);
+    }
   }
   async function fetchStationReference(){
     const admin=await referenceDataset(REF_ADMIN_KEY);const city=admin?.city||state.mapData?.city;
@@ -1064,7 +1089,7 @@ From the next question onward, automatic answer previews use this actual locatio
   }
   async function refreshReferenceData(scope='core'){
     if(!state.developerPassword)return toast('Log in to Developer first.');
-    const status=$('developerReferenceStatus');status.textContent='Refreshing…';
+    const status=$('developerReferenceStatus');status.textContent=`v${APP_VERSION} · Refreshing…`;
     const results=[];const failures=[];
     if(scope==='core'||scope==='all'){
       try{
@@ -1088,7 +1113,7 @@ From the next question onward, automatic answer previews use this actual locatio
     }
     state.mapData=null;state.poiCache={};
     const changed=results.filter(x=>x==='updated'||x==='created').length,unchanged=results.filter(x=>x==='unchanged').length;
-    status.textContent=`Reference check complete: ${changed} changed/new, ${unchanged} unchanged${failures.length?`, ${failures.length} failed`:''}.`;
+    status.textContent=`v${APP_VERSION} · ${changed} changed/new, ${unchanged} unchanged${failures.length?`, ${failures.length} failed`:''}`;
     if(failures.length)toast(`Some refreshes failed:\n${failures.join('\n')}`,8000);
     await loadDeveloperDashboard();
   }

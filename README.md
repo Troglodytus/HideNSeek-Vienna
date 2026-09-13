@@ -1,3 +1,12 @@
+# Vienna Hide & Seek MVP v3.3.2
+
+Hotfix over v3.3.1:
+- Visible build number in Developer mode so deployed JS can be verified.
+- District refresh now prefers the official City of Vienna ArcGIS Bezirksgrenzen feature layer (WGS84 GeoJSON), with WFS fallback.
+- Correct Park layer: `PARKANLAGEOGD` (not `PARKINFOOGD`).
+- Core Vienna reference data continue to be stored in Supabase and reused by all clients.
+- U-/S-Bahn line references are retained on line/station records for the planned Same Line question.
+
 # Vienna Hide & Seek v3.3.1
 
 This release removes normal gameplay's dependency on live Overpass requests once reference data has been seeded.
