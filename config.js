@@ -2,7 +2,7 @@
 // The anon/publishable key is intended to be used in browser apps; security is enforced by RLS + RPCs in supabase.sql.
 window.HNS_CONFIG = {
   SUPABASE_URL: "https://yvgxhetrbhxvrutynfls.supabase.co",
-  SUPABASE_ANON_KEY: "sb_secret_YCS9hnSEIqU3ShnFQJRz9g_mfcd4SRJ",
+  SUPABASE_PUBLISHABLE_KEY: "sb_publishable_VWDXP5Gl5gOV-DEuZu6Q3g_plhzZNzU",
   // Primary + fallbacks. The app automatically tries the next server on 429/502/503/504 or timeout.
   OVERPASS_ENDPOINT: "https://overpass-api.de/api/interpreter",
   OVERPASS_ENDPOINTS: [

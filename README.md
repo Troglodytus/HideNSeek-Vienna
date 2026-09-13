@@ -1,4 +1,17 @@
-# Vienna Hide & Seek v3.2
+# Vienna Hide & Seek v3.2.1
+
+Frontend-only hotfix/update from v3.2.0. **No new Supabase SQL migration is required.**
+
+## Important Supabase configuration
+Use the Project API URL (`https://PROJECTREF.supabase.co`) and an `sb_publishable_...` key. Never commit an `sb_secret_...` or `service_role` key.
+
+## v3.2.1 changes
+- validates the Supabase URL/key and rejects Dashboard URLs or secret keys with a clear error;
+- uses OpenFreeMap Positron vector tiles through MapLibre/Leaflet and hides all symbol/label layers for a clean no-label basemap;
+- loads actual U-Bahn route relations (U-lines) and S-Bahn route relations, plus subdued physical ÖBB/passenger rail track geometry;
+- stronger transit line styling;
+- Endgame location controls are hidden during the station phase. The hider only reveals them by pressing “Seekers reached my station — prepare Endgame”;
+- game creation still asks only for the secret station.
 
 This version is a frontend + small database migration update over v3.1.x.
 

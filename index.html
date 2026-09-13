@@ -48,7 +48,7 @@
             <label>Station<select id="createStationSelect"><option value="">Loading stations…</option></select></label>
             <div id="createStationStatus" class="status-box">No station selected.</div>
             <div id="createMap" class="map map-small"></div>
-            <p class="hint">You do not choose the final hiding spot yet. The hider can keep moving within the eventual 250 m station zone and only sets the actual hiding coordinate when privately starting Endgame.</p>
+            <p class="hint">At game creation the station is the only secret target. No final hiding coordinate is required.</p>
             <button id="createGameButton" class="primary full">Create game</button>
           </div>
 
@@ -125,12 +125,13 @@
             <div class="panel compact private-panel">
               <div class="row-between"><h3>Private hider phase</h3><span class="private-badge">HIDER ONLY</span></div>
               <div id="hiderSecretStatus" class="status-box"></div>
-              <div id="endgameLocationControls">
-                <p class="hint"><strong>Only when the seekers have reached the correct station:</strong> choose your actual hiding location. It must lie inside the current station hiding radius and remains completely private.</p>
+              <button id="prepareEndgameButton" class="secondary full">Seekers reached my station — prepare Endgame</button>
+              <div id="endgameLocationControls" class="hidden">
+                <p class="hint">Now choose your actual hiding location. It must lie inside the current station hiding radius and remains completely private.</p>
                 <div class="location-row"><button id="endgameGpsButton" class="secondary">Use my current GPS</button><button id="endgamePickButton" class="secondary">Pick hiding spot on map</button></div>
                 <div id="endgameLocationStatus" class="status-box">No final hiding spot selected yet.</div>
               </div>
-              <button id="toggleEndgameButton" class="primary full"></button>
+              <button id="toggleEndgameButton" class="primary full hidden"></button>
               <p class="hint">Starting Endgame is manual and secret. Before it starts, answer previews use the station. After it starts, they use the chosen actual hiding coordinate. Seekers receive no phase flag or notification.</p>
             </div>
             <div class="panel compact">
@@ -174,10 +175,12 @@
   </main>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/maplibre-gl@5/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/@maplibre/maplibre-gl-leaflet/leaflet-maplibre-gl.js"></script>
   <script src="https://unpkg.com/@turf/turf@7.2.0/turf.min.js"></script>
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.2.0"></script>
+  <script src="./app.js?v=3.2.1"></script>
 </body>
 </html>

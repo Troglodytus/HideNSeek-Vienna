@@ -8,10 +8,10 @@
   const VIENNA_AREA_ID = 3600109166;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
-  const CACHE_KEY = 'hns_vienna_osm_v6';
-  const CACHE_TS_KEY = 'hns_vienna_osm_v6_ts';
-  const RAIL_CACHE_KEY = 'hns_vienna_rails_v2';
-  const RAIL_CACHE_TS_KEY = 'hns_vienna_rails_v2_ts';
+  const CACHE_KEY = 'hns_vienna_osm_v7';
+  const CACHE_TS_KEY = 'hns_vienna_osm_v7_ts';
+  const RAIL_CACHE_KEY = 'hns_vienna_transit_v3';
+  const RAIL_CACHE_TS_KEY = 'hns_vienna_transit_v3_ts';
   const POI_CACHE_PREFIX = 'hns_vienna_poi_v1_';
 
   const QUESTION_CARDS = [
@@ -49,7 +49,7 @@
   const state = {
     supabase:null, mapData:null, createMap:null, gameMap:null, mapLayers:{},
     createStation:null,
-    endgameCandidate:null, endgameAccuracyM:null, endgamePickMode:false,
+    endgameCandidate:null, endgameAccuracyM:null, endgamePickMode:false, endgamePrepareMode:false,
     role:null, game:null, hiderPassword:null, secret:null,
     actions:[], hiderDraws:[], timeTraps:[], privateCardUses:[],
     seekerOriginMode:'gps', seekerPoint:null, seekerAccuracyM:null, seekerMarker:null, seekerAccuracyCircle:null,
@@ -82,43 +82,52 @@
   function escapeHtml(s) { return String(s??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
   function handleError(e) { console.error(e); toast(e?.message || String(e), 5000); }
 
+  function supabasePublicKey(){ return String(CFG.SUPABASE_PUBLISHABLE_KEY || CFG.SUPABASE_ANON_KEY || '').trim(); }
   function assertConfigured() {
-    if (!CFG.SUPABASE_URL || !CFG.SUPABASE_ANON_KEY || CFG.SUPABASE_URL.includes('YOUR_PROJECT') || CFG.SUPABASE_ANON_KEY.includes('YOUR_')) throw new Error('Supabase is not configured yet. Edit config.js first.');
+    const url=String(CFG.SUPABASE_URL||'').trim();
+    const key=supabasePublicKey();
+    if(!url || url.includes('YOUR_PROJECT')) throw new Error('Supabase is not configured yet. Set SUPABASE_URL in config.js.');
+    if(url.includes('supabase.com/dashboard')) throw new Error('SUPABASE_URL is the Dashboard address. Use the Project API URL instead, e.g. https://PROJECTREF.supabase.co.');
+    if(!/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i.test(url)) throw new Error('SUPABASE_URL should look like https://PROJECTREF.supabase.co.');
+    if(!key || key.includes('YOUR_') || key.includes('REPLACE_ME')) throw new Error('Add your Supabase Publishable key (sb_publishable_...) to config.js.');
+    if(key.startsWith('sb_secret_')) throw new Error('Never use a Supabase secret key in this browser app. Use the sb_publishable_... key from Settings → API Keys.');
+    if(key.startsWith('eyJ')) console.warn('Using a legacy anon JWT. Prefer the current sb_publishable_... key.');
   }
   function initSupabaseIfNeeded() {
     if (state.supabase) return;
     assertConfigured();
-    state.supabase=window.supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
+    state.supabase=window.supabase.createClient(String(CFG.SUPABASE_URL).replace(/\/$/,''),supabasePublicKey(),{auth:{persistSession:false,autoRefreshToken:false}});
   }
 
   function baseMapOptions(){ return {center:VIENNA_CENTER,zoom:VIENNA_ZOOM,zoomControl:true,minZoom:10,maxZoom:19,preferCanvas:true}; }
   function addBaseTiles(map){
-    const cartoKey=String(CFG.CARTO_BASEMAP_KEY||'').trim();
-    const keySuffix=cartoKey?`?key=${encodeURIComponent(cartoKey)}`:'';
-    const sources=[
-      {url:`https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png${keySuffix}`,maxZoom:20,subdomains:'abcd',attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',className:'minimal-basemap-tiles'},
-      {url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',className:'minimal-basemap-tiles fallback-osm'},
-      {url:'https://tile.openstreetmap.de/{z}/{x}/{y}.png',maxZoom:19,attribution:'&copy; OpenStreetMap contributors · fallback tiles: openstreetmap.de',className:'minimal-basemap-tiles fallback-osm'}
-    ];
-    let active=null, sourceIndex=0, loadedAny=false, errorCount=0, switchTimer=null;
-    const activate=(idx)=>{
-      sourceIndex=idx; loadedAny=false; errorCount=0;
-      if(active)map.removeLayer(active);
-      const src=sources[idx];
-      active=L.tileLayer(src.url,{maxZoom:src.maxZoom,attribution:src.attribution,subdomains:src.subdomains,detectRetina:true,className:src.className||''});
-      active.on('tileload',()=>{loadedAny=true;clearTimeout(switchTimer);});
-      active.on('tileerror',()=>{
-        errorCount++;
-        if(errorCount>=3){
-          if(sourceIndex+1<sources.length){toast('Primary map tiles failed; switching basemap…',3500);activate(sourceIndex+1);}
-          else toast('Basemap tiles could not be loaded. Check browser tracking/ad blocking or network access.',6500);
-        }
-      });
-      active.addTo(map);
-      clearTimeout(switchTimer);
-      switchTimer=setTimeout(()=>{if(!loadedAny&&sourceIndex+1<sources.length){toast('Map tiles are slow; trying fallback basemap…',3500);activate(sourceIndex+1);}},6500);
-    };
-    activate(0);
+    // OpenFreeMap Positron vector tiles: free, no account/key. Hide every symbol layer so
+    // the basemap stays deliberately quiet (roads/buildings/land/water, no labels or POIs).
+    if(window.maplibregl && typeof L.maplibreGL==='function'){
+      try{
+        const glLayer=L.maplibreGL({style:'https://tiles.openfreemap.org/styles/positron',interactive:false,attributionControl:false}).addTo(map);
+        const gl=glLayer.getMaplibreMap();
+        let cleaned=false;
+        const removeLabels=()=>{
+          if(cleaned)return;
+          const style=gl.getStyle?.();
+          if(!style?.layers)return;
+          for(const layer of style.layers){
+            if(layer.type==='symbol'){try{gl.setLayoutProperty(layer.id,'visibility','none');}catch(_){}}
+          }
+          cleaned=true;
+        };
+        gl.on('load',removeLabels);
+        gl.on('styledata',removeLabels);
+        gl.on('error',e=>console.warn('OpenFreeMap basemap error',e?.error||e));
+        map._hnsBaseLayer=glLayer;
+        setTimeout(()=>map.invalidateSize(),160);
+        return;
+      }catch(e){console.warn('OpenFreeMap/MapLibre unavailable, using raster fallback.',e);}
+    }
+    const fallback=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',className:'minimal-basemap-tiles fallback-osm'}).addTo(map);
+    fallback.on('tileerror',()=>toast('Basemap tile error. The transit overlay can still load.',3500));
+    map._hnsBaseLayer=fallback;
     setTimeout(()=>map.invalidateSize(),120);
   }
   function isPolygon(f){ return f?.geometry && ['Polygon','MultiPolygon'].includes(f.geometry.type); }
@@ -242,6 +251,39 @@ out center tags;`;
     return state.mapData;
   }
 
+  const U_LINE_COLOURS={U1:'#e20613',U2:'#a862a4',U3:'#ef7c00',U4:'#009540',U5:'#008c95',U6:'#9d6930'};
+  function relationRouteLines(osm){
+    const out=[];
+    for(const rel of (osm?.elements||[])){
+      if(rel.type!=='relation')continue;
+      const tags=rel.tags||{};
+      const route=String(tags.route||'');
+      const ref=String(tags.ref||'').trim();
+      const networkText=`${tags.network||''} ${tags.operator||''} ${tags.name||''}`;
+      let transitType='train';
+      if(route==='subway'||/^U[1-6]$/i.test(ref))transitType='subway';
+      else if(/^S\d+/i.test(ref)||/S-Bahn/i.test(networkText))transitType='s-bahn';
+      const colour=(transitType==='subway'&&U_LINE_COLOURS[ref.toUpperCase()]) || (transitType==='s-bahn'?'#1769aa':(tags.colour||'#475569'));
+      for(const m of (rel.members||[])){
+        if(m.type!=='way'||!Array.isArray(m.geometry)||m.geometry.length<2)continue;
+        const coords=m.geometry.filter(p=>Number.isFinite(p.lon)&&Number.isFinite(p.lat)).map(p=>[p.lon,p.lat]);
+        if(coords.length<2)continue;
+        out.push(turf.lineString(coords,{railway:transitType,routeRef:ref,routeName:tags.name||ref||'Passenger rail',routeColour:colour,relationId:rel.id}));
+      }
+    }
+    return out;
+  }
+  function physicalRailLines(osm){
+    const out=[];
+    for(const e of (osm?.elements||[])){
+      if(e.type!=='way'||!Array.isArray(e.geometry)||e.geometry.length<2)continue;
+      const coords=e.geometry.filter(p=>Number.isFinite(p.lon)&&Number.isFinite(p.lat)).map(p=>[p.lon,p.lat]);
+      if(coords.length<2)continue;
+      out.push(turf.lineString(coords,{railway:'rail-physical',routeRef:'',routeName:'ÖBB / passenger rail'}));
+    }
+    return out;
+  }
+
   async function loadRailLinesInBackground(force=false){
     if(!state.mapData)return;
     if(state.railLoadPromise)return state.railLoadPromise;
@@ -251,21 +293,30 @@ out center tags;`;
       if(!force&&Date.now()-ts<ttl){
         try{const cached=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY));if(Array.isArray(cached)&&cached.length){state.mapData.railLines=cached;refreshRailLayers();return;}}catch(_){}
       }
-      const query=`[out:json][timeout:60];
+      const routeQuery=`[out:json][timeout:55];
 area(${VIENNA_AREA_ID})->.vienna;
 (
- way(area.vienna)["railway"="subway"];
- way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
+  rel(area.vienna)["type"="route"]["route"="subway"]["ref"~"^U[1-6]$",i];
+  rel(area.vienna)["type"="route"]["route"="train"]["ref"~"^S[0-9]+",i];
 );
+out geom;`;
+      const physicalQuery=`[out:json][timeout:45];
+area(${VIENNA_AREA_ID})->.vienna;
+way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
 out geom tags;`;
       try{
-        const osm=await fetchOverpass(query,'Vienna rail-line query',50000);
-        const geo=osmtogeojson(osm);
-        const lines=(geo.features||[]).filter(f=>['LineString','MultiLineString'].includes(f.geometry?.type));
+        const [routes,physical]=await Promise.all([
+          fetchOverpass(routeQuery,'Vienna U-Bahn/S-Bahn route query',50000),
+          fetchOverpass(physicalQuery,'Vienna passenger-rail geometry query',45000).catch(e=>{console.warn('Physical rail fallback unavailable',e);return {elements:[]};})
+        ]);
+        const routeLines=relationRouteLines(routes);
+        const physicalLines=physicalRailLines(physical);
+        const lines=[...physicalLines,...routeLines];
         state.mapData.railLines=lines;
         localStorage.setItem(RAIL_CACHE_KEY,JSON.stringify(lines));localStorage.setItem(RAIL_CACHE_TS_KEY,String(Date.now()));
         refreshRailLayers();
-      }catch(e){console.warn('Rail overlay unavailable; base map and stations remain usable.',e);toast('Rail overlay could not load; stations and game map remain usable.',4500);}
+        if(routeLines.length===0)toast('Stations loaded, but U-/S-Bahn route relations returned no line geometry.',4500);
+      }catch(e){console.warn('Transit overlay unavailable; base map and stations remain usable.',e);toast('Transit lines could not load; station selection remains usable.',4500);}
     })().finally(()=>{state.railLoadPromise=null;});
     return state.railLoadPromise;
   }
@@ -301,9 +352,12 @@ out geom tags;`;
     if(kind==='city')return {color:'#9ca3af',weight:1.5,fillOpacity:0};
     if(kind==='district')return {color:'#cbd5e1',weight:.8,dashArray:'4 6',fillOpacity:0,opacity:.65};
     if(kind==='rail'){
-      const railway=feature?.properties?.tags?.railway||feature?.properties?.railway;
-      if(railway==='subway')return {color:'#2563eb',weight:5.5,opacity:.92,lineCap:'round',lineJoin:'round'};
-      return {color:'#111827',weight:4.2,opacity:.78,lineCap:'round',lineJoin:'round'};
+      const p=feature?.properties||{};
+      const railway=p?.tags?.railway||p.railway;
+      if(railway==='subway')return {color:p.routeColour||'#2563eb',weight:7,opacity:.96,lineCap:'round',lineJoin:'round'};
+      if(railway==='s-bahn')return {color:p.routeColour||'#1769aa',weight:5.5,opacity:.92,lineCap:'round',lineJoin:'round'};
+      if(railway==='rail-physical')return {color:'#64748b',weight:3.2,opacity:.58,lineCap:'round',lineJoin:'round'};
+      return {color:p.routeColour||'#334155',weight:4,opacity:.75,lineCap:'round',lineJoin:'round'};
     }
     if(kind==='possible')return {color:'#2563eb',weight:2,fillColor:'#3b82f6',fillOpacity:.16};
     if(kind==='excluded')return {color:'#4b5563',weight:0,fillColor:'#4b5563',fillOpacity:.46};
@@ -596,9 +650,9 @@ This does not consume a Veto card and awards no card draw. Seekers will only be 
   }
 
   function clearEndgameCandidate(){
-    state.endgameCandidate=null;state.endgameAccuracyM=null;state.endgamePickMode=false;
+    state.endgameCandidate=null;state.endgameAccuracyM=null;state.endgamePickMode=false;state.endgamePrepareMode=false;
     state.mapLayers.endgameCandidate?.remove();state.mapLayers.endgameCandidateAccuracy?.remove();state.mapLayers.endgameCandidate=null;state.mapLayers.endgameCandidateAccuracy=null;
-    if($('endgameLocationStatus')){$('endgameLocationStatus').className='status-box';$('endgameLocationStatus').textContent='No final hiding spot selected yet.';}
+    if($('endgameLocationStatus')){$('endgameLocationStatus').className='status-box';$('endgameLocationStatus').textContent='Choose the actual spot only when you are ready to start Endgame.';}
   }
 
   async function toggleEndgame(){
@@ -671,10 +725,16 @@ From the next question onward, automatic answer previews use this actual locatio
   function renderHiderSecret(){
     if(state.role!=='hider'||!state.secret)return;
     const [slng,slat]=state.secret.station.geometry.coordinates;const phase=state.secret.endgame?'<span class="phase-endgame">ENDGAME / actual spot</span>':'<span class="phase-station">STATION PHASE</span>';
-    const hiddenText=state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'<br>Actual spot: <em>not chosen yet</em> — choose it only when you are ready to start Endgame.';
+    const hiddenText=state.secret.endgame&&state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'<br>Final hiding coordinate is not needed until you decide the seekers have reached the correct station.';
     $('hiderSecretStatus').innerHTML=`${phase}<br><strong>${escapeHtml(state.secret.station_name)}</strong> · ${slat.toFixed(5)}, ${slng.toFixed(5)}${hiddenText}`;
-    $('toggleEndgameButton').textContent=state.secret.endgame?'Undo endgame: use station again':'Start private endgame with selected spot';
-    $('endgameLocationControls')?.classList.toggle('hidden',state.secret.endgame);
+    const prep=$('prepareEndgameButton'),controls=$('endgameLocationControls'),toggle=$('toggleEndgameButton');
+    if(state.secret.endgame){
+      prep?.classList.add('hidden');controls?.classList.add('hidden');toggle?.classList.remove('hidden');toggle.textContent='Undo endgame: use station again';
+    }else if(state.endgamePrepareMode){
+      prep?.classList.add('hidden');controls?.classList.remove('hidden');toggle?.classList.remove('hidden');toggle.textContent='Start private endgame with selected spot';
+    }else{
+      prep?.classList.remove('hidden');controls?.classList.add('hidden');toggle?.classList.add('hidden');
+    }
     state.mapLayers.hiderStation?.remove();state.mapLayers.hiderSpot?.remove();state.mapLayers.hiderZone?.remove();
     state.mapLayers.hiderStation=L.marker([slat,slng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.gameMap).bindTooltip(`Private station: ${state.secret.station_name}`);
     if(state.secret.hidden){const [hlng,hlat]=state.secret.hidden.geometry.coordinates;state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Private actual hiding spot');}
@@ -752,7 +812,7 @@ From the next question onward, automatic answer previews use this actual locatio
     if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';state.realtimeChannel=state.supabase.channel(`actions-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
   }
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false});clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false});clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
@@ -761,7 +821,7 @@ From the next question onward, automatic answer previews use this actual locatio
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
     $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
     document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Fresh GPS for each question':'Tap map after choosing question';}));
-    $('setThermoGpsButton').addEventListener('click',()=>getGps().then(p=>submitThermoReference({...p,source:'gps'})).catch(handleError));$('setThermoMapButton').addEventListener('click',()=>{state.pickMode='thermo';toast('Tap the map to set Thermometer point A.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));
+    $('setThermoGpsButton').addEventListener('click',()=>getGps().then(p=>submitThermoReference({...p,source:'gps'})).catch(handleError));$('setThermoMapButton').addEventListener('click',()=>{state.pickMode='thermo';toast('Tap the map to set Thermometer point A.');});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your actual hiding spot with GPS or on the map, then start Endgame.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));
   }
 
   bindUi();
