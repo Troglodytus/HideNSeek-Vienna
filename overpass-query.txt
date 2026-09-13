@@ -1,39 +1,29 @@
-# v3.2: Vienna U-Bahn + passenger rail only. No tram/light-rail overlay.
-# Vienna OSM relation: 109166; Overpass area: 3600109166.
+Vienna Hide & Seek v3.3.1 — Overpass fallback queries
 
-# 1) Vienna boundary + districts
-[out:json][timeout:45];
-area(3600109166)->.vienna;
-(
-  relation(109166);
-  relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
-);
-out geom;
+Core districts, stations and U-/S-Bahn lines no longer use Overpass. They use Stadt Wien WFS.
+Museums, parks, libraries and hospitals also use Stadt Wien WFS.
 
-# 2) Selectable stations: U-Bahn and passenger train stations only
-[out:json][timeout:45];
-area(3600109166)->.vienna;
-(
-  nwr(area.vienna)["railway"~"^(station|halt)$"]["station"="subway"]["access"!="private"];
-  nwr(area.vienna)["railway"~"^(station|halt)$"]["subway"="yes"]["access"!="private"];
-  nwr(area.vienna)["railway"~"^(station|halt)$"]["train"="yes"]["tram"!="yes"]["access"!="private"];
-  nwr(area.vienna)["public_transport"="station"]["train"="yes"]["tram"!="yes"]["access"!="private"];
-);
+For the remaining OSM-only Tentacle categories, use a fixed Vienna bounding box
+(south, west, north, east): 48.117668,16.18218,48.322571,16.577511
+
+Cinema:
+[out:json][timeout:30];
+nwr["amenity"="cinema"](48.117668,16.18218,48.322571,16.577511);
 out center tags;
 
-# The web app collapses same-named OSM station elements to ONE selectable marker.
+Zoo:
+[out:json][timeout:30];
+nwr["tourism"="zoo"](48.117668,16.18218,48.322571,16.577511);
+out center tags;
 
-# 3) Transit line overlay: subway + ordinary rail; explicitly no tram/light_rail
-[out:json][timeout:60];
-area(3600109166)->.vienna;
-(
-  way(area.vienna)["railway"="subway"];
-  way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
-);
-out geom tags;
+Aquarium:
+[out:json][timeout:30];
+nwr["tourism"="aquarium"](48.117668,16.18218,48.322571,16.577511);
+out center tags;
 
-# Tentacle example: parks
-# [out:json][timeout:45];
-# area(3600109166)->.vienna;
-# nwr(area.vienna)["leisure"="park"];
-# out center tags;
+Amusement park:
+[out:json][timeout:30];
+nwr["tourism"="theme_park"](48.117668,16.18218,48.322571,16.577511);
+out center tags;
+
+The bounding-box form avoids the extra Overpass area lookup used in older builds.

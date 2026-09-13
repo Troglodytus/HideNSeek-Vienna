@@ -1,4 +1,4 @@
-# Vienna Hide & Seek v3.3.0
+# Vienna Hide & Seek v3.3.1
 
 This release removes normal gameplay's dependency on live Overpass requests once reference data has been seeded.
 
@@ -11,7 +11,7 @@ This release removes normal gameplay's dependency on live Overpass requests once
 
 ## Upgrade from v3.2.x
 
-1. In Supabase SQL Editor run `supabase-v3.3.0-migration.sql` once.
+1. In Supabase SQL Editor run `supabase-v3.3.1-migration.sql` once.
 2. Set a strong developer password directly in Supabase SQL Editor (do NOT save the real password in GitHub):
 
 ```sql
@@ -66,3 +66,14 @@ For Hiders, the current-position marker stays local/private. During Endgame prep
 Developer refresh prefers the City of Vienna official district GeoJSON service. The app accepts a district dataset only when it contains exactly district numbers 1 through 23.
 
 OSM `admin_level=9` remains a fallback because this is the documented OSM level for Vienna Gemeindebezirke.
+
+
+## v3.3.1 data-source hotfix
+
+- Districts now use the current City of Vienna WFS `BEZIRKSGRENZEOGD` endpoint directly.
+- U-Bahn/S-Bahn line geometry now uses City of Vienna WFS `OEFFLINIENOGD`.
+- Station candidates use `UBAHNHALTOGD` + `OEFFHALTESTOGD` and are matched to U/S line geometry; saved stations include a `lineRefs` array for future same-line questions.
+- Museums, parks, libraries and hospitals use City of Vienna WFS layers instead of Overpass.
+- Remaining OSM-only Tentacle categories use a fixed Vienna bounding-box Overpass query instead of an Overpass area lookup.
+- Reference refresh continues through individual POI failures instead of aborting the entire job.
+- No new Supabase migration is needed beyond the v3.3.0 migration.

@@ -8,16 +8,22 @@
   const VIENNA_AREA_ID = 3600109166;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
-  const CACHE_KEY = 'hns_vienna_osm_v9';
-  const CACHE_TS_KEY = 'hns_vienna_osm_v9_ts';
-  const RAIL_CACHE_KEY = 'hns_vienna_transit_v5';
-  const RAIL_CACHE_TS_KEY = 'hns_vienna_transit_v5_ts';
-  const POI_CACHE_PREFIX = 'hns_vienna_poi_v2_';
+  const CACHE_KEY = 'hns_vienna_osm_v10';
+  const CACHE_TS_KEY = 'hns_vienna_osm_v10_ts';
+  const RAIL_CACHE_KEY = 'hns_vienna_transit_v6';
+  const RAIL_CACHE_TS_KEY = 'hns_vienna_transit_v6_ts';
+  const POI_CACHE_PREFIX = 'hns_vienna_poi_v3_';
   const REF_ADMIN_KEY='vienna_admin_v1';
   const REF_STATIONS_KEY='vienna_stations_v1';
   const REF_TRANSIT_KEY='vienna_transit_v1';
   const REF_POI_PREFIX='vienna_poi_';
-  const VIENNA_DISTRICTS_GEOJSON_URL='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
+  const VIENNA_WFS_BASE='https://data.wien.gv.at/daten/geo';
+  const VIENNA_BBOX='48.117668,16.18218,48.322571,16.577511';
+  const VIENNA_DISTRICTS_LAYER='BEZIRKSGRENZEOGD';
+  const VIENNA_TRANSIT_LINES_LAYER='OEFFLINIENOGD';
+  const VIENNA_TRANSIT_STOPS_LAYER='OEFFHALTESTOGD';
+  const VIENNA_UBAHN_STOPS_LAYER='UBAHNHALTOGD';
+  const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKINFOOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
 
   const QUESTION_CARDS = [
     { slot:'radar-20000', category:'RADAR', title:'20 km Radar', detail:'Is the target within 20 km of this location?', kind:'radar', radius_m:20000 },
@@ -147,7 +153,7 @@
     const configured=[];
     if(Array.isArray(CFG.OVERPASS_ENDPOINTS))configured.push(...CFG.OVERPASS_ENDPOINTS);
     if(CFG.OVERPASS_ENDPOINT)configured.push(CFG.OVERPASS_ENDPOINT);
-    configured.push('https://overpass.private.coffee/api/interpreter','https://overpass-api.de/api/interpreter');
+    configured.push('https://overpass-api.de/api/interpreter','https://maps.mail.ru/osm/tools/overpass/api/interpreter','https://overpass.private.coffee/api/interpreter');
     return [...new Set(configured.filter(Boolean).map(x=>String(x).replace(/\/$/,'')))];
   }
 
@@ -177,6 +183,142 @@
       }
     }
     throw new Error(`${label} failed on all configured Overpass servers. ${lastError?.message||''}`.trim());
+  }
+
+  function wfsUrl(layer,extra={}){
+    const u=new URL(VIENNA_WFS_BASE);
+    const params={service:'WFS',request:'GetFeature',version:'1.1.0',typeName:`ogdwien:${layer}`,srsName:'EPSG:4326',outputFormat:'json',...extra};
+    for(const [k,v] of Object.entries(params))if(v!==undefined&&v!==null)u.searchParams.set(k,String(v));
+    return u.toString();
+  }
+  async function fetchViennaWfs(layer,label=layer){
+    const url=wfsUrl(layer);
+    const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),45000);
+    try{
+      const r=await fetch(url,{cache:'no-store',signal:controller.signal});
+      if(!r.ok)throw new Error(`${label}: Vienna WFS returned HTTP ${r.status}.`);
+      const geo=await r.json();
+      if(!geo||!Array.isArray(geo.features))throw new Error(`${label}: Vienna WFS did not return GeoJSON features.`);
+      return geo;
+    }catch(e){
+      if(e?.name==='AbortError')throw new Error(`${label}: Vienna WFS timed out.`);
+      throw e;
+    }finally{clearTimeout(timer);}
+  }
+  function firstStringProp(props,names=[]){
+    for(const k of names){const v=props?.[k];if(typeof v==='string'&&v.trim())return v.trim();}
+    return '';
+  }
+  function lineRefsFromText(text){
+    const refs=[];const seen=new Set();
+    for(const m of String(text||'').toUpperCase().matchAll(/\b([US]\d{1,2})\b/g)){
+      const r=m[1];if(!seen.has(r)){seen.add(r);refs.push(r);}
+    }
+    return refs;
+  }
+  function lineRefsFromProps(props){
+    const preferred=[props?.LBEZEICHNUNG,props?.LINIE,props?.LINIEN,props?.LINE,props?.ROUTE,props?.BEZEICHNUNG];
+    let refs=lineRefsFromText(preferred.filter(Boolean).join(' '));
+    if(!refs.length)refs=lineRefsFromText(Object.values(props||{}).filter(v=>typeof v==='string').join(' '));
+    return refs;
+  }
+  function flattenLineFeatures(feature){
+    const g=feature?.geometry;if(!g)return [];
+    if(g.type==='LineString')return [feature];
+    if(g.type==='MultiLineString')return (g.coordinates||[]).filter(c=>c.length>1).map(c=>turf.lineString(c,feature.properties||{}));
+    return [];
+  }
+  function normalizeOfficialTransitLines(geo){
+    const out=[];
+    for(const f of (geo?.features||[])){
+      const p=f.properties||{};const refs=lineRefsFromProps(p);
+      const us=refs.filter(r=>/^U[1-6]$/.test(r));const ss=refs.filter(r=>/^S\d{1,2}$/.test(r));
+      if(!us.length&&!ss.length)continue;
+      const routeRefs=[...us,...ss];
+      const railway=us.length&&!ss.length?'subway':ss.length&&!us.length?'s-bahn':'passenger-rail';
+      for(const line of flattenLineFeatures(f)){
+        line.properties={...(line.properties||{}),railway,routeRefs,routeRef:routeRefs[0]||'',routeName:routeRefs.join(', '),routeColour:us.length===1?(U_LINE_COLOURS[us[0]]||'#334155'):(ss.length?'#1769aa':'#475569'),source:'Stadt Wien OGD'};
+        out.push(line);
+      }
+    }
+    if(!out.length)throw new Error('Vienna public-transport WFS returned no U-Bahn/S-Bahn line geometry.');
+    return out;
+  }
+  function pointFromFeature(f){
+    if(!f?.geometry)return null;
+    try{
+      if(f.geometry.type==='Point')return turf.point(f.geometry.coordinates,f.properties||{});
+      if(f.geometry.type==='MultiPoint'&&f.geometry.coordinates?.length)return turf.point(f.geometry.coordinates[0],f.properties||{});
+      if(['Polygon','MultiPolygon','LineString','MultiLineString'].includes(f.geometry.type))return turf.centroid(f);
+    }catch(_){}
+    return null;
+  }
+  function stationNameFromProps(props){
+    const explicit=firstStringProp(props,['HTXT','HALTESTELLE','HST_NAME','HSTNAME','STATION','NAME','NAMEK','BEZEICHNUNG','BEZEICHNUNG1','TEXT','BASIS_NAME','OBJEKT']);
+    if(explicit)return explicit;
+    for(const v of Object.values(props||{})){
+      if(typeof v!=='string')continue;const t=v.trim();
+      if(t.length>=2&&t.length<=80&&!/^https?:/i.test(t)&&!/^\d+$/.test(t)&&!/^([US]\d+[ ,]*)+$/i.test(t)&&!/^(U-Bahn|S- und Regionalbahn|Straßenbahn|Autobus)$/i.test(t))return t;
+    }
+    return '';
+  }
+  function nearestRefsForPoint(point,railLines,allowedPrefix,maxM){
+    const best=new Map();
+    for(const line of railLines){
+      const refs=(line.properties?.routeRefs||lineRefsFromText(line.properties?.routeRef||'')).filter(r=>allowedPrefix.test(r));if(!refs.length)continue;
+      let d;try{d=turf.pointToLineDistance(point,line,{units:'meters'});}catch(_){continue;}
+      if(d>maxM)continue;
+      for(const ref of refs){if(!best.has(ref)||d<best.get(ref))best.set(ref,d);}
+    }
+    return [...best.entries()].sort((a,b)=>a[1]-b[1]).map(x=>x[0]);
+  }
+  function normalizeOfficialStations(ubahnGeo,allStopsGeo,railLines,city){
+    const raw=[];
+    const add=(f,mode,maxM,prefix)=>{
+      const pt=pointFromFeature(f);if(!pt)return;
+      try{if(city&&!turf.booleanPointInPolygon(pt,city))return;}catch(_){}
+      const name=stationNameFromProps(f.properties||{});if(!name)return;
+      const propRefs=lineRefsFromProps(f.properties||{}).filter(r=>prefix.test(r));
+      const nearRefs=nearestRefsForPoint(pt,railLines,prefix,maxM);
+      const refs=[...new Set([...propRefs,...nearRefs])];if(!refs.length)return;
+      raw.push({pt,name,refs,mode});
+    };
+    for(const f of (ubahnGeo?.features||[]))add(f,'subway',180,/^U[1-6]$/);
+    for(const f of (allStopsGeo?.features||[]))add(f,'rail',130,/^S\d{1,2}$/);
+    const groups=new Map();
+    for(const r of raw){
+      const key=r.name.toLocaleLowerCase('de-AT').replace(/\s+/g,' ').trim();
+      const [lng,lat]=r.pt.geometry.coordinates;const g=groups.get(key)||{name:r.name,latSum:0,lngSum:0,count:0,refs:new Set(),modes:new Set()};
+      g.latSum+=lat;g.lngSum+=lng;g.count++;r.refs.forEach(x=>g.refs.add(x));g.modes.add(r.mode);groups.set(key,g);
+    }
+    return [...groups.values()].map((g,i)=>turf.point([g.lngSum/g.count,g.latSum/g.count],{
+      stationName:g.name,stationId:`wien-ogd/${i}/${g.name}`,transitModes:[...g.modes],lineRefs:[...g.refs].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})),railway:g.modes.has('subway')&&!g.modes.has('rail')?'subway':'rail'
+    })).sort((a,b)=>a.properties.stationName.localeCompare(b.properties.stationName,'de'));
+  }
+  async function fetchOfficialTransitBundle(city){
+    const [lineGeo,ubahnStops,allStops]=await Promise.all([
+      fetchViennaWfs(VIENNA_TRANSIT_LINES_LAYER,'Vienna public-transport lines'),
+      fetchViennaWfs(VIENNA_UBAHN_STOPS_LAYER,'Vienna U-Bahn stops'),
+      fetchViennaWfs(VIENNA_TRANSIT_STOPS_LAYER,'Vienna public-transport stops')
+    ]);
+    const railLines=normalizeOfficialTransitLines(lineGeo);
+    const stations=normalizeOfficialStations(ubahnStops,allStops,railLines,city);
+    if(stations.length<20)throw new Error(`Vienna official transport data produced only ${stations.length} U-/S-Bahn stations.`);
+    return {stations,railLines};
+  }
+  function featureToPoi(feature,type,i){
+    const pt=pointFromFeature(feature);if(!pt)return null;
+    const p=feature.properties||{};
+    const namesByType={park:['ANL_NAME','NAME','NAMEK','BEZEICHNUNG'],museum:['NAME','NAMEK','BEZEICHNUNG','MUSEUM'],library:['NAME','NAMEK','BEZEICHNUNG'],hospital:['NAME','NAMEK','BEZEICHNUNG','KRANKENHAUS']};
+    const name=firstStringProp(p,namesByType[type]||[])||stationNameFromProps(p)||`${humanize(type)} ${i+1}`;
+    const [lng,lat]=pt.geometry.coordinates;return {id:`wien-ogd/${type}/${feature.id??i}`,name,lat,lng};
+  }
+  async function fetchOfficialPoi(type){
+    const layer=WFS_POI_LAYERS[type];if(!layer)return null;
+    const geo=await fetchViennaWfs(layer,`${humanize(type)} (Stadt Wien)`);
+    const pois=(geo.features||[]).map((f,i)=>featureToPoi(f,type,i)).filter(Boolean);
+    if(!pois.length)throw new Error(`${humanize(type)}: Vienna WFS returned no usable features.`);
+    return {pois};
   }
 
   function processBoundaryGeoJSON(geo){
@@ -265,22 +407,12 @@
       } catch(_){}
     }
 
-    toast('Reference data has not been seeded yet; using live map fallback…',5000);
-    // Fallback only. Once the Developer reference cache is populated, normal players never
-    // need this expensive Overpass path.
-    const boundaryQuery=`[out:json][timeout:45];area(${VIENNA_AREA_ID})->.vienna;(relation(${VIENNA_RELATION_ID});relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];);out geom;`;
-    const boundaryOsm=await fetchOverpass(boundaryQuery,'Vienna boundary/district query',50000);
-    const boundary=processBoundaryGeoJSON(osmtogeojson(boundaryOsm));
-    if(!validateDistricts(boundary.districts))throw new Error(`Vienna district fallback returned ${boundary.districts?.length||0} valid districts; expected exactly 23.`);
-
-    const stationQuery=`[out:json][timeout:45];area(${VIENNA_AREA_ID})->.vienna;(nwr(area.vienna)["railway"~"^(station|halt)$"]["station"="subway"]["access"!="private"];nwr(area.vienna)["railway"~"^(station|halt)$"]["subway"="yes"]["access"!="private"];nwr(area.vienna)["railway"~"^(station|halt)$"]["train"="yes"]["tram"!="yes"]["access"!="private"];nwr(area.vienna)["public_transport"="station"]["train"="yes"]["tram"!="yes"]["access"!="private"];);out center tags;`;
-    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',40000);
-    const stations=parseStationElements(stationOsm,boundary.city);
-    if(!stations.length)throw new Error('No Vienna stations were returned by the live fallback.');
-
-    state.mapData={city:boundary.city,districts:boundary.districts,stations,railLines:[]};
-    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
-    loadRailLinesInBackground(force);
+    toast('Reference data has not been seeded yet; using official Vienna WFS once. Seed Developer data to make later loads immediate.',5000);
+    const boundary=await fetchOfficialAdminData();
+    const bundle=await fetchOfficialTransitBundle(boundary.city);
+    state.mapData={city:boundary.city,districts:boundary.districts,stations:bundle.stations,railLines:bundle.railLines};
+    localStorage.setItem(CACHE_KEY,JSON.stringify({city:boundary.city,districts:boundary.districts,stations:bundle.stations}));localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
+    localStorage.setItem(RAIL_CACHE_KEY,JSON.stringify(bundle.railLines));localStorage.setItem(RAIL_CACHE_TS_KEY,String(Date.now()));
     return state.mapData;
   }
 
@@ -331,16 +463,11 @@
       const ttl=(Number(CFG.OSM_CACHE_HOURS)||168)*3600e3;
       const ts=Number(localStorage.getItem(RAIL_CACHE_TS_KEY)||0);
       if(!force&&Date.now()-ts<ttl){try{const cached=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY));if(Array.isArray(cached)&&cached.length){state.mapData.railLines=cached;refreshRailLayers();return;}}catch(_){}}
-      const routeQuery=`[out:json][timeout:55];area(${VIENNA_AREA_ID})->.vienna;(rel(area.vienna)["type"="route"]["route"="subway"]["ref"~"^U[1-6]$",i];rel(area.vienna)["type"="route"]["route"="train"]["ref"~"^S[0-9]+",i];);out geom;`;
-      const physicalQuery=`[out:json][timeout:45];area(${VIENNA_AREA_ID})->.vienna;way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];out geom tags;`;
       try{
-        const [routes,physical]=await Promise.all([
-          fetchOverpass(routeQuery,'Vienna U-Bahn/S-Bahn route query',50000),
-          fetchOverpass(physicalQuery,'Vienna passenger-rail geometry query',45000).catch(e=>{console.warn('Physical rail fallback unavailable',e);return {elements:[]};})
-        ]);
-        const routeLines=relationRouteLines(routes),physicalLines=physicalRailLines(physical),lines=[...physicalLines,...routeLines];
+        const lineGeo=await fetchViennaWfs(VIENNA_TRANSIT_LINES_LAYER,'Vienna transit network');
+        const lines=normalizeOfficialTransitLines(lineGeo);
         state.mapData.railLines=lines;localStorage.setItem(RAIL_CACHE_KEY,JSON.stringify(lines));localStorage.setItem(RAIL_CACHE_TS_KEY,String(Date.now()));refreshRailLayers();
-      }catch(e){console.warn('Transit overlay unavailable',e);toast('Transit lines unavailable. Seed/refresh them in Developer → Reference data.',4500);}
+      }catch(e){console.warn('Official Vienna transit network could not load',e);toast('Transit overlay could not load; station and game logic remain usable.',3500);}
     })().finally(()=>{state.railLoadPromise=null;});
     return state.railLoadPromise;
   }
@@ -403,7 +530,7 @@
     state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(md.railLines),{style:f=>mapGeoStyle('rail',f),interactive:false}).addTo(map);
     state.mapLayers[prefix+'stations']=L.geoJSON(turf.featureCollection(md.stations),{
       pointToLayer:(f,ll)=>L.marker(ll,{icon:L.divIcon({className:stationIconClass(f),iconSize:[18,18]})}),
-      onEachFeature:(f,layer)=>{ layer.bindTooltip(f.properties?.stationName||'Station',{direction:'top',offset:[0,-7]}); if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);}); }
+      onEachFeature:(f,layer)=>{ layer.bindTooltip(`${f.properties?.stationName||'Station'}${f.properties?.lineRefs?.length?` · ${f.properties.lineRefs.join(', ')}`:''}`,{direction:'top',offset:[0,-7]}); if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);}); }
     }).addTo(map);
   }
 
@@ -577,11 +704,14 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
     }catch(e){console.warn('POI reference lookup failed',type,e);}
     const key=POI_CACHE_PREFIX+type,cached=localStorage.getItem(key);
     if(cached){try{const obj=JSON.parse(cached);if(Array.isArray(obj.pois)){state.poiCache[type]=obj.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];}}catch(_){}}
-    toast(`${humanize(type)} reference data is missing; using live Overpass once. Refresh Developer data to avoid this.`,5000);
-    const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No Overpass filter for ${type}.`);
-    const query=`[out:json][timeout:45];area(${VIENNA_AREA_ID})->.vienna;nwr(area.vienna)${filter};out center tags;`;
-    const osm=await fetchOverpass(query,`${humanize(type)} Tentacle query`,40000);
-    const raw=parsePoiElements(osm,type);
+    toast(`${humanize(type)} reference data is missing; loading the authoritative/fallback source once. Refresh Developer data to cache it centrally.`,5000);
+    let raw;
+    if(WFS_POI_LAYERS[type])raw=(await fetchOfficialPoi(type)).pois;
+    else{
+      const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No data source for ${type}.`);
+      const query=`[out:json][timeout:30];nwr${filter}(${VIENNA_BBOX});out center tags;`;
+      const osm=await fetchOverpass(query,`${humanize(type)} Tentacle query`,35000);raw=parsePoiElements(osm,type);
+    }
     localStorage.setItem(key,JSON.stringify({ts:Date.now(),pois:raw}));state.poiCache[type]=raw.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];
   }
   function parsePoiElements(osm,type){
@@ -912,36 +1042,55 @@ From the next question onward, automatic answer previews use this actual locatio
     return {city,districts};
   }
   async function fetchOfficialAdminData(){
-    try{const r=await fetch(VIENNA_DISTRICTS_GEOJSON_URL,{cache:'no-store'});if(!r.ok)throw new Error(`HTTP ${r.status}`);return normalizeOfficialDistricts(await r.json());}
-    catch(e){console.warn('Official Vienna district service failed; falling back to OSM',e);const q=`[out:json][timeout:55];area(${VIENNA_AREA_ID})->.vienna;(relation(${VIENNA_RELATION_ID});relation(area.vienna)[\"boundary\"=\"administrative\"][\"admin_level\"=\"9\"];);out geom;`;const osm=await fetchOverpass(q,'Vienna district refresh fallback',60000);const admin=processBoundaryGeoJSON(osmtogeojson(osm));if(!validateDistricts(admin.districts))throw new Error('Both official and OSM district refreshes failed to return exactly 23 districts.');return admin;}
+    const geo=await fetchViennaWfs(VIENNA_DISTRICTS_LAYER,'Vienna district boundaries');
+    return normalizeOfficialDistricts(geo);
   }
   async function fetchStationReference(){
     const admin=await referenceDataset(REF_ADMIN_KEY);const city=admin?.city||state.mapData?.city;
-    const q=`[out:json][timeout:55];area(${VIENNA_AREA_ID})->.vienna;(nwr(area.vienna)["railway"~"^(station|halt)$"]["station"="subway"]["access"!="private"];nwr(area.vienna)["railway"~"^(station|halt)$"]["subway"="yes"]["access"!="private"];nwr(area.vienna)["railway"~"^(station|halt)$"]["train"="yes"]["tram"!="yes"]["access"!="private"];nwr(area.vienna)["public_transport"="station"]["train"="yes"]["tram"!="yes"]["access"!="private"];);out center tags;`;
-    const osm=await fetchOverpass(q,'Vienna station refresh',60000);const stations=parseStationElements(osm,city);if(stations.length<20)throw new Error(`Only ${stations.length} stations were returned.`);return {stations};
+    const bundle=await fetchOfficialTransitBundle(city);
+    return {stations:bundle.stations};
   }
   async function fetchTransitReference(){
-    const routeQ=`[out:json][timeout:70];area(${VIENNA_AREA_ID})->.vienna;(rel(area.vienna)["type"="route"]["route"="subway"]["ref"~"^U[1-6]$",i];rel(area.vienna)["type"="route"]["route"="train"]["ref"~"^S[0-9]+",i];);out geom;`;
-    const railQ=`[out:json][timeout:60];area(${VIENNA_AREA_ID})->.vienna;way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];out geom tags;`;
-    const routes=await fetchOverpass(routeQ,'Vienna U-/S-Bahn refresh',70000);const physical=await fetchOverpass(railQ,'Vienna rail refresh',65000).catch(()=>({elements:[]}));
-    const railLines=[...physicalRailLines(physical),...relationRouteLines(routes)];if(!railLines.length)throw new Error('Transit refresh returned no line geometry.');return {railLines};
+    const admin=await referenceDataset(REF_ADMIN_KEY);const city=admin?.city||state.mapData?.city;
+    const bundle=await fetchOfficialTransitBundle(city);
+    return {railLines:bundle.railLines};
   }
-  async function refreshOnePoi(type){const filter=POI_QUERIES[type];const q=`[out:json][timeout:55];area(${VIENNA_AREA_ID})->.vienna;nwr(area.vienna)${filter};out center tags;`;const osm=await fetchOverpass(q,`${humanize(type)} refresh`,60000);return {pois:parsePoiElements(osm,type)};}
+  async function refreshOnePoi(type){
+    if(WFS_POI_LAYERS[type])return await fetchOfficialPoi(type);
+    const filter=POI_QUERIES[type];
+    const q=`[out:json][timeout:30];nwr${filter}(${VIENNA_BBOX});out center tags;`;
+    const osm=await fetchOverpass(q,`${humanize(type)} refresh`,40000);
+    return {pois:parsePoiElements(osm,type)};
+  }
   async function refreshReferenceData(scope='core'){
     if(!state.developerPassword)return toast('Log in to Developer first.');
     const status=$('developerReferenceStatus');status.textContent='Refreshing…';
-    try{
-      const results=[];
-      if(scope==='core'||scope==='all'){
-        status.textContent='Refreshing official Vienna districts…';const admin=await fetchOfficialAdminData();results.push(await saveReferenceDataset(REF_ADMIN_KEY,admin,'Stadt Wien OGD Bezirksgrenzen'));
-        status.textContent='Refreshing U-Bahn / rail stations…';const stations=await fetchStationReference();results.push(await saveReferenceDataset(REF_STATIONS_KEY,stations,'OpenStreetMap / Overpass'));
-        status.textContent='Refreshing U-Bahn / S-Bahn network…';const transit=await fetchTransitReference();results.push(await saveReferenceDataset(REF_TRANSIT_KEY,transit,'OpenStreetMap / Overpass'));
+    const results=[];const failures=[];
+    if(scope==='core'||scope==='all'){
+      try{
+        status.textContent='Refreshing official Vienna districts…';
+        const admin=await fetchOfficialAdminData();results.push(await saveReferenceDataset(REF_ADMIN_KEY,admin,'Stadt Wien WFS · BEZIRKSGRENZEOGD'));
+        status.textContent='Refreshing official U-Bahn / S-Bahn network and stations…';
+        const bundle=await fetchOfficialTransitBundle(admin.city);
+        results.push(await saveReferenceDataset(REF_STATIONS_KEY,{stations:bundle.stations},'Stadt Wien WFS · UBAHNHALTOGD + OEFFHALTESTOGD'));
+        results.push(await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:bundle.railLines},'Stadt Wien WFS · OEFFLINIENOGD'));
+      }catch(e){failures.push(`Core: ${e.message}`);}
+    }
+    if(scope==='pois'||scope==='all'){
+      for(const type of Object.keys(POI_QUERIES)){
+        try{
+          status.textContent=`Refreshing ${humanize(type)}…`;
+          const payload=await refreshOnePoi(type);
+          const source=WFS_POI_LAYERS[type]?`Stadt Wien WFS · ${WFS_POI_LAYERS[type]}`:'OpenStreetMap / Overpass (Vienna bbox)';
+          results.push(await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',payload,source));
+        }catch(e){failures.push(`${humanize(type)}: ${e.message}`);}
       }
-      if(scope==='pois'||scope==='all'){
-        for(const type of Object.keys(POI_QUERIES)){status.textContent=`Refreshing ${humanize(type)}…`;const payload=await refreshOnePoi(type);results.push(await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',payload,'OpenStreetMap / Overpass'));}
-      }
-      state.mapData=null;state.poiCache={};const changed=results.filter(x=>x==='updated'||x==='created').length,unchanged=results.filter(x=>x==='unchanged').length;status.textContent=`Reference check complete: ${changed} changed/new, ${unchanged} unchanged.`;await loadDeveloperDashboard();
-    }catch(e){status.textContent=`Refresh failed: ${e.message}`;throw e;}
+    }
+    state.mapData=null;state.poiCache={};
+    const changed=results.filter(x=>x==='updated'||x==='created').length,unchanged=results.filter(x=>x==='unchanged').length;
+    status.textContent=`Reference check complete: ${changed} changed/new, ${unchanged} unchanged${failures.length?`, ${failures.length} failed`:''}.`;
+    if(failures.length)toast(`Some refreshes failed:\n${failures.join('\n')}`,8000);
+    await loadDeveloperDashboard();
   }
   async function importBrowserReferenceCache(){
     if(!state.developerPassword)return;

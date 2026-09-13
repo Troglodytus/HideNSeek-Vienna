@@ -85,7 +85,7 @@
           <div class="developer-grid">
             <section class="panel">
               <div class="row-between"><div><div class="eyebrow">REFERENCE DATA</div><h3>Vienna cache</h3></div><span id="developerReferenceStatus" class="mini-status">Ready</span></div>
-              <p class="hint">Normal players load these datasets from Supabase. Overpass is used only when you explicitly refresh OSM data here.</p>
+              <p class="hint">Normal players load these datasets from Supabase. Core Vienna data come from Stadt Wien WFS; Overpass is only a fallback/source for POI categories without an official Vienna layer.</p>
               <div class="developer-actions">
                 <button id="developerImportCache" class="secondary">Import this browser's existing cache</button>
                 <button id="developerRefreshCore" class="secondary">Refresh districts + stations + network</button>
@@ -226,6 +226,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.3.0"></script>
+  <script src="./app.js?v=3.3.1"></script>
 </body>
 </html>
