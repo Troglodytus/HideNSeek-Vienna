@@ -8,10 +8,10 @@
   const VIENNA_AREA_ID = 3600109166;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
-  const CACHE_KEY = 'hns_vienna_osm_v7';
-  const CACHE_TS_KEY = 'hns_vienna_osm_v7_ts';
-  const RAIL_CACHE_KEY = 'hns_vienna_transit_v3';
-  const RAIL_CACHE_TS_KEY = 'hns_vienna_transit_v3_ts';
+  const CACHE_KEY = 'hns_vienna_osm_v8';
+  const CACHE_TS_KEY = 'hns_vienna_osm_v8_ts';
+  const RAIL_CACHE_KEY = 'hns_vienna_transit_v4';
+  const RAIL_CACHE_TS_KEY = 'hns_vienna_transit_v4_ts';
   const POI_CACHE_PREFIX = 'hns_vienna_poi_v1_';
 
   const QUESTION_CARDS = [
@@ -420,10 +420,11 @@ out geom tags;`;
   }
 
   function renderCreateSelection(){
-    state.mapLayers.createStationRing?.remove(); state.mapLayers.createSelectedStation?.remove();
+    state.mapLayers.createStationRing?.remove(); state.mapLayers.createStationRing=null; state.mapLayers.createSelectedStation?.remove();
     if(!state.createStation)return;
     const [lng,lat]=state.createStation.geometry.coordinates;
-    state.mapLayers.createStationRing=L.circle([lat,lng],{radius:BASE_HIDE_RADIUS_M,color:'#7c3aed',weight:2.5,fillColor:'#7c3aed',fillOpacity:.08}).addTo(state.createMap);
+    // Station phase is city-wide. The 250 m hiding radius is deliberately not shown here;
+    // it becomes relevant only when the hider prepares/starts Endgame.
     state.mapLayers.createSelectedStation=L.marker([lat,lng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.createMap).bindTooltip(state.createStation.properties.stationName);
     state.createMap.panTo([lat,lng]);
   }
@@ -463,7 +464,7 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
   async function enterSeeker(gameId){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status').eq('id',gameId).single(); if(error)throw error; state.role='seeker';state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon(); }
 
   async function enterGameCommon(){
-    await ensureMapData(); await buildBaseAllowedArea(BASE_HIDE_RADIUS_M); setupGameMap();
+    await ensureMapData(); setupGameMap();
     $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
     showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
   }
@@ -661,7 +662,7 @@ This does not consume a Veto card and awards no card draw. Seekers will only be 
       const ok=await confirmAction('Return privately to station phase?',`Automatic answer previews will again use ${state.secret.station_name}.
 
 Seekers receive no phase flag or notification. The stored hiding spot remains private so you can re-enter Endgame later.`,'Undo endgame',true);if(!ok)return;
-      const {error}=await state.supabase.rpc('set_endgame_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:false,p_hidden_lat:null,p_hidden_lng:null});if(error)throw error;await refreshHiderSecret();await reloadGameState();return;
+      const {error}=await state.supabase.rpc('set_endgame_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:false,p_hidden_lat:null,p_hidden_lng:null});if(error)throw error;await refreshHiderSecret();await reloadGameState();return;
     }
     if(!state.endgameCandidate)return toast('Choose your actual hiding location first, using GPS or a map tap.');
     const d=distanceM(state.endgameCandidate,state.secret.station),limit=currentEndgameRadius();if(d>limit+0.5)return toast(`The hiding spot must be within ${Math.round(limit)} m of the station.`);
@@ -671,7 +672,7 @@ Distance from ${state.secret.station_name}: ${Math.round(d)} m
 Allowed radius: ${Math.round(limit)} m
 
 From the next question onward, automatic answer previews use this actual location. Seekers receive no phase flag or notification.`,'Enter endgame');if(!ok)return;
-    const {error}=await state.supabase.rpc('set_endgame_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:true,p_hidden_lat:lat,p_hidden_lng:lng});if(error)throw error;clearEndgameCandidate();await refreshHiderSecret();await reloadGameState();
+    const {error}=await state.supabase.rpc('set_endgame_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:true,p_hidden_lat:lat,p_hidden_lng:lng});if(error)throw error;clearEndgameCandidate();await refreshHiderSecret();await reloadGameState();
   }
   async function refreshHiderSecret(){if(state.role!=='hider')return;const {data,error}=await state.supabase.rpc('get_hider_game_v4',{p_game_id:state.game.id,p_password:state.hiderPassword});if(error)throw error;const r=data?.[0];if(r)state.secret=secretFromRow(r);}
 
@@ -696,7 +697,29 @@ From the next question onward, automatic answer previews use this actual locatio
   }
 
   function currentAreaMultiplier(){const p=effectiveActions('curse_play').filter(a=>a.payload?.effect_key==='prosperous_home');return Math.pow(2,p.length);}
-  async function recomputePossibleArea(){const radius=BASE_HIDE_RADIUS_M*Math.sqrt(currentAreaMultiplier());await buildBaseAllowedArea(radius);let possible=state.baseAllowedArea;const qs=effectiveActions('question').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));for(const q of qs){if(activeVetoForQuestion(q.id))continue;const a=activeAnswerForQuestion(q.id);if(!a)continue;possible=applyConstraint(possible,q,a.payload?.answer);if(!possible)break;}state.possibleArea=possible;}
+  async function recomputePossibleArea(){
+    // Station phase: the hiding STATION can be anywhere inside Vienna. Do not pre-limit
+    // the map to 250 m buffers around every station; that radius only matters in Endgame.
+    const endgameZone=latestAction('endgame_zone');
+    let possible=state.mapData.city;
+    let phaseStartMs=0;
+    if(endgameZone?.payload?.center){
+      const radius=Number(endgameZone.payload.radius_m)||BASE_HIDE_RADIUS_M;
+      const center=turf.point([Number(endgameZone.payload.center.lng),Number(endgameZone.payload.center.lat)]);
+      const zone=turf.buffer(center,radius/1000,{units:'kilometers',steps:64});
+      possible=safeIntersect(state.mapData.city,zone)||zone;
+      phaseStartMs=new Date(endgameZone.created_at).getTime();
+    }
+    const qs=effectiveActions('question')
+      .filter(q=>!phaseStartMs || new Date(q.created_at).getTime()>phaseStartMs)
+      .sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+    for(const q of qs){
+      if(activeVetoForQuestion(q.id))continue;
+      const a=activeAnswerForQuestion(q.id);if(!a)continue;
+      possible=applyConstraint(possible,q,a.payload?.answer);if(!possible)break;
+    }
+    state.possibleArea=possible;
+  }
 
   function applyConstraint(possible,q,answer){
     if(!possible)return null;const p=q.payload||{};
@@ -738,7 +761,9 @@ From the next question onward, automatic answer previews use this actual locatio
     state.mapLayers.hiderStation?.remove();state.mapLayers.hiderSpot?.remove();state.mapLayers.hiderZone?.remove();
     state.mapLayers.hiderStation=L.marker([slat,slng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.gameMap).bindTooltip(`Private station: ${state.secret.station_name}`);
     if(state.secret.hidden){const [hlng,hlat]=state.secret.hidden.geometry.coordinates;state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Private actual hiding spot');}
-    const r=currentEndgameRadius();state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#7c3aed',weight:2,dashArray:'5 4',fillOpacity:.04}).addTo(state.gameMap);
+    if(state.secret.endgame||state.endgamePrepareMode){
+      const r=currentEndgameRadius();state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#7c3aed',weight:2,dashArray:'5 4',fillOpacity:.04}).addTo(state.gameMap);
+    }
   }
 
   function renderQuestionDeck(){
@@ -788,9 +813,9 @@ From the next question onward, automatic answer previews use this actual locatio
     $('activeCurses').innerHTML=visible.length?visible.map(a=>{if(a.kind==='question_veto')return `<div class="curse-item"><strong>${a.payload?.automatic_tentacle?'Tentacle automatically vetoed':'Question vetoed'}</strong><div class="meta">${escapeHtml(a.payload?.question_title||'A question')} ${a.payload?.automatic_tentacle?`had no qualifying option within ${Number(a.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of the hider target.`:'was vetoed.'}</div></div>`;if(a.kind==='time_trap_trigger')return `<div class="curse-item"><strong>Time Trap triggered</strong><div class="meta">${escapeHtml(a.payload?.station_name||'Station')} · +${Number(a.payload?.bonus_minutes||0)} min</div></div>`;const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-item curse-active"><strong>${escapeHtml(a.payload?.title||'Card')}</strong><div class="meta">${escapeHtml(a.payload?.description||'')}</div><div class="curse-countdown">${rem===null?'ACTIVE':formatCountdown(rem)}</div></div>`;}).join(''):'<div class="mini-status">No public card effect is active.</div>';
   }
 
-  function canToggleAction(a){if(a.kind==='time_trap_trigger')return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
+  function canToggleAction(a){if(a.kind==='time_trap_trigger'||a.kind==='endgame_zone')return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
   function renderActivity(){
-    const rows=[...state.actions].reverse();$('activityHistory').innerHTML=rows.length?rows.map(a=>`<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions"><button class="${a.is_active?'danger':'secondary'} small full" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`).join(''):'<div class="mini-status">No game activity yet.</div>';
+    const rows=[...state.actions].filter(a=>a.kind!=='endgame_zone').reverse();$('activityHistory').innerHTML=rows.length?rows.map(a=>`<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions"><button class="${a.is_active?'danger':'secondary'} small full" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`).join(''):'<div class="mini-status">No game activity yet.</div>';
     $('activityHistory').querySelectorAll('[data-toggle-action]').forEach(b=>b.addEventListener('click',()=>{const a=state.actions.find(x=>x.id===b.dataset.toggleAction);if(a)setActionActive(a,b.dataset.active==='true').catch(handleError);}));
   }
 

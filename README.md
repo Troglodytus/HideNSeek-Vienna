@@ -88,3 +88,13 @@ Line overlay:
 - `railway=rail` excluding yard/siding/spur service tracks
 
 No `railway=tram` or `railway=light_rail` ways are requested.
+## v3.2.2 changes
+
+- Station phase starts with the **entire Vienna city boundary** as the possible area. The app no longer unions 250 m buffers around every station at game load.
+- The 250 m (or Prosperous Home-adjusted) final zone is activated only when the Hider manually starts Endgame.
+- Starting Endgame creates an internal `endgame_zone` action containing only the already-known station centre and radius. It is not shown in the activity feed and never contains the private hiding coordinate.
+- Questions from the station phase are not reused as geometric constraints after Endgame starts, because they were answered relative to the station rather than the final hiding point.
+- The station-selection screen no longer draws a 250 m circle.
+- Removing the station-buffer union also makes the game map substantially faster to initialise.
+
+Existing v3.2.x projects: run `supabase-v3.2.2-migration.sql` once, then replace `app.js` and `index.html`.
