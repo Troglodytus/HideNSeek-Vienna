@@ -4,6 +4,7 @@
   const CFG = window.HNS_CONFIG || {};
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
+  const VIENNA_BBOX = { south:48.08, west:16.18, north:48.34, east:16.62 };
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
   const CACHE_KEY = 'hns_vienna_osm_v5';
@@ -54,7 +55,7 @@
     possibleArea:null, baseAllowedArea:null, baseRadiusBuilt:null,
     poiCache:{}, tentaclePreview:null, pendingOverlay:null,
     realtimeChannel:null, timerId:null, pollId:null, serverOffsetMs:0,
-    overpassBadUntil:{}, railLoadPromise:null,
+    overpassBadUntil:{}, boundaryLoadPromise:null, railLoadPromise:null,
     confirmResolver:null
   };
 
@@ -112,7 +113,7 @@
       const controller=new AbortController();
       const timer=setTimeout(()=>controller.abort(),timeoutMs);
       try{
-        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query),signal:controller.signal});
+        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8',Accept:'application/json'},body:'data='+encodeURIComponent(query),signal:controller.signal});
         clearTimeout(timer);
         if(!response.ok){
           const err=new Error(`${label}: ${endpoint} returned HTTP ${response.status}.`);
@@ -154,6 +155,51 @@
     return stations.filter(s=>{const [lng,lat]=s.geometry.coordinates;const k=`${s.properties.stationName}|${lat.toFixed(5)}|${lng.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;});
   }
 
+  function fallbackViennaCity(){
+    const {south,west,north,east}=VIENNA_BBOX;
+    return turf.polygon([[[west,south],[east,south],[east,north],[west,north],[west,south]]],{name:'Vienna (fallback extent)',fallback:true});
+  }
+
+  function saveMapData(){
+    if(!state.mapData)return;
+    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));
+    localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
+  }
+
+  function applyBoundaryData(boundary){
+    if(!state.mapData)return;
+    state.mapData.city=boundary.city;
+    state.mapData.districts=boundary.districts;
+    state.mapData.boundaryLoaded=true;
+    state.mapData.stations=state.mapData.stations.filter(s=>{try{return turf.booleanPointInPolygon(s,boundary.city);}catch(_){return true;}});
+    state.baseAllowedArea=null;state.baseRadiusBuilt=null;
+    saveMapData();
+    if(state.createMap){
+      drawReferenceLayers(state.createMap,'create-',f=>selectCreateStation(f));
+      state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8]});
+    }
+    if(state.gameMap){
+      drawReferenceLayers(state.gameMap,'game-',f=>{if(state.role==='hider'&&state.trapPlacementCard)placeTimeTrapAtStation(f).catch(handleError);});
+      state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[5,5]});
+      recomputePossibleArea().then(renderAll).catch(handleError);
+    }
+  }
+
+  async function loadBoundaryInBackground(){
+    if(state.boundaryLoadPromise)return state.boundaryLoadPromise;
+    state.boundaryLoadPromise=(async()=>{
+      const boundaryQuery=`[out:json][timeout:45];
+(
+ relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
+ relation["boundary"="administrative"]["admin_level"="9"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
+);
+out body;>;out skel qt;`;
+      try{applyBoundaryData(processBoundaryGeoJSON(osmtogeojson(await fetchOverpass(boundaryQuery,'Vienna boundary/district query',20000))));}
+      catch(e){console.warn('Vienna boundary unavailable; fallback map extent remains usable.',e);}
+    })().finally(()=>{state.boundaryLoadPromise=null;});
+    return state.boundaryLoadPromise;
+  }
+
   async function ensureMapData(force=false) {
     if (state.mapData && !force) return state.mapData;
     const ttl=(Number(CFG.OSM_CACHE_HOURS)||168)*3600e3;
@@ -161,33 +207,21 @@
     if (!force && Date.now()-ts<ttl) {
       try {
         const cached=JSON.parse(localStorage.getItem(CACHE_KEY));
-        if(cached?.city&&cached?.districts?.length&&cached?.stations?.length){state.mapData=cached;state.mapData.railLines=state.mapData.railLines||[];loadRailLinesInBackground(false);return state.mapData;}
+        if(cached?.city&&cached?.stations?.length){state.mapData=cached;state.mapData.districts=Array.isArray(cached.districts)?cached.districts:[];state.mapData.railLines=state.mapData.railLines||[];if(!cached.boundaryLoaded)loadBoundaryInBackground();loadRailLinesInBackground(false);return state.mapData;}
       } catch(_){}
     }
 
-    toast('Loading Vienna boundary…',3500);
-    const boundaryQuery=`[out:json][timeout:60];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
-(
- relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"];
- relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
-);
-out body;>;out skel qt;`;
-    const boundaryOsm=await fetchOverpass(boundaryQuery,'Vienna boundary/district query',50000);
-    const boundary=processBoundaryGeoJSON(osmtogeojson(boundaryOsm));
-
     toast('Loading Vienna rail and U-Bahn stations…',4000);
-    const stationQuery=`[out:json][timeout:45];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
-nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
+    const stationQuery=`[out:json][timeout:25];
+nwr["railway"~"^(station|halt)$"]["access"!="private"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
 out center tags;`;
-    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',40000);
-    const stations=parseStationElements(stationOsm,boundary.city);
+    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',20000);
+    const stations=parseStationElements(stationOsm,fallbackViennaCity());
     if(!stations.length)throw new Error('No Vienna stations were returned by Overpass.');
 
-    state.mapData={city:boundary.city,districts:boundary.districts,stations,railLines:[]};
-    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));
-    localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
+    state.mapData={city:fallbackViennaCity(),districts:[],stations,railLines:[],boundaryLoaded:false};
+    saveMapData();
+    loadBoundaryInBackground();
     loadRailLinesInBackground(force);
     return state.mapData;
   }

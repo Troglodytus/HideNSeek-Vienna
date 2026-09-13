@@ -1,21 +1,19 @@
-# v3.1.2: startup is intentionally split into small sequential queries.
+# v3.1.3: stations load first; boundary and rail geometry are background enhancements.
 
-# 1) Vienna boundary + 23 districts
-[out:json][timeout:60];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+# 1) Stations first (required before game creation)
+[out:json][timeout:25];
+nwr["railway"~"^(station|halt)$"]["access"!="private"](48.08,16.18,48.34,16.62);
+out center tags;
+
+# 2) Vienna boundary + 23 districts (background enhancement)
+[out:json][timeout:45];
 (
-  relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"];
-  relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
+  relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"](48.08,16.18,48.34,16.62);
+  relation["boundary"="administrative"]["admin_level"="9"](48.08,16.18,48.34,16.62);
 );
 out body;
 >;
 out skel qt;
-
-# 2) Stations only (small; required before game creation)
-[out:json][timeout:45];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
-nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
-out center tags;
 
 # 3) Rail overlay (optional/background; failure never blocks the game)
 [out:json][timeout:60];

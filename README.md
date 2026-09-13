@@ -1,6 +1,6 @@
-# Vienna Hide & Seek v3.1.2
+# Vienna Hide & Seek v3.1.3
 
-**Hotfix over v3.1.1:** startup Overpass loading is now split into lightweight sequential requests, automatically falls back between public Overpass instances, displays the Leaflet/OSM map before Overpass finishes, and treats the rail-line overlay as optional background data. Tentacle requests use the same fallback system. No Supabase SQL/database change is required from v3.1.1.
+**Hotfix over v3.1.2:** startup now loads the lightweight station list before requesting expensive boundary geometry. The map remains usable with a Vienna fallback extent while district and rail overlays load in the background, and the app automatically falls back between public Overpass instances. Tentacle requests use the same fallback system. No Supabase SQL/database change is required.
 
 # Vienna Hide & Seek — MVP v3.1
 
