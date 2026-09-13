@@ -1,0 +1,18 @@
+# Base Vienna map query used by app.js
+[out:json][timeout:90];
+area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+(
+  relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"];
+  relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["access"!="private"];
+  way(area.vienna)["railway"~"^(rail|subway)$"];
+);
+out body;
+>;
+out skel qt;
+
+# Tentacle queries are generated on demand. Example: museums
+# [out:json][timeout:60];
+# area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+# nwr(area.vienna)["tourism"="museum"];
+# out center tags;

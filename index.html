@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#111827" />
+  <title>Vienna Hide & Seek</title>
+  <link rel="preconnect" href="https://unpkg.com" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <main id="app">
+    <section id="homeView" class="view home-view active">
+      <div class="hero-card">
+        <div class="eyebrow">VIENNA</div>
+        <h1>Hide &amp; Seek</h1>
+        <p class="subtitle">A two-stage, map-driven hider/seeker game for Vienna.</p>
+        <div class="home-actions">
+          <button class="mode-button hider" data-action="open-hider">Hider</button>
+          <button class="mode-button seeker" data-action="open-seeker">Seeker</button>
+        </div>
+        <p class="fineprint">OpenStreetMap / Overpass · Vienna rail &amp; U-Bahn · 250 m base hiding zone</p>
+      </div>
+    </section>
+
+    <section id="lobbyView" class="view">
+      <header class="topbar">
+        <button class="icon-button" data-action="home" aria-label="Back">←</button>
+        <div><div id="lobbyKicker" class="eyebrow">HIDER</div><h2 id="lobbyTitle">Game setup</h2></div>
+      </header>
+
+      <div id="hiderLobby" class="lobby-panel hidden">
+        <div class="panel tabs-panel">
+          <div class="segmented">
+            <button class="segment active" data-tab="create">Create game</button>
+            <button class="segment" data-tab="open">Open game</button>
+          </div>
+
+          <div id="createTab" class="tab-content active">
+            <label>Game name<input id="createGameName" maxlength="80" placeholder="e.g. Spot 1 – Daniel" autocomplete="off" /></label>
+            <label>Hider password<input id="createPassword" type="password" minlength="4" maxlength="100" placeholder="At least 4 characters" /></label>
+
+            <div class="setup-step">
+              <div class="step-number">1</div>
+              <div><strong>Choose the hiding station</strong><div class="hint">Tap a rail/U-Bahn station marker. During the long game, this station coordinate is the secret target used to answer questions.</div></div>
+            </div>
+            <div id="createStationStatus" class="status-box">No station selected.</div>
+
+            <div class="setup-step">
+              <div class="step-number">2</div>
+              <div><strong>Choose the actual hiding spot</strong><div class="hint">The exact spot must be within 250 m of the selected station. It remains secret until the hider privately switches into endgame.</div></div>
+            </div>
+            <div class="location-row">
+              <button id="createGpsButton" class="secondary">Use my GPS</button>
+              <button id="createPickButton" class="secondary">Pick spot on map</button>
+            </div>
+            <div id="createLocationStatus" class="status-box">No actual hiding spot selected yet.</div>
+            <div id="createMap" class="map map-small"></div>
+            <p class="hint">Station selection and the exact hiding coordinate are protected server-side. Seekers receive neither value.</p>
+            <button id="createGameButton" class="primary full">Create game</button>
+          </div>
+
+          <div id="openTab" class="tab-content">
+            <label>Game<select id="hiderGameSelect"></select></label>
+            <label>Hider password<input id="openPassword" type="password" placeholder="Game password" /></label>
+            <button id="openHiderGameButton" class="primary full">Open as hider</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="seekerLobby" class="lobby-panel hidden">
+        <div class="panel">
+          <p class="hint strong">Choose an active game. Seekers do not need the hider password.</p>
+          <div id="gameList" class="game-list"></div>
+          <button id="refreshGamesButton" class="secondary full">Refresh games</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="gameView" class="view game-view">
+      <header class="topbar game-topbar">
+        <button class="icon-button" data-action="leave-game" aria-label="Back">←</button>
+        <div class="grow"><div id="roleKicker" class="eyebrow">SEEKER</div><h2 id="gameTitle">Game</h2></div>
+        <span id="syncBadge" class="badge">Connecting…</span>
+      </header>
+
+      <div class="game-shell">
+        <div class="main-column">
+          <div class="map-wrap">
+            <div id="gameMap" class="map map-main"></div>
+            <div class="map-legend">
+              <span><i class="swatch possible"></i> possible</span>
+              <span><i class="swatch excluded"></i> excluded</span>
+              <span><i class="swatch rail"></i> rail / U-Bahn</span>
+              <span><i class="swatch poi"></i> Tentacle POI</span>
+            </div>
+          </div>
+
+          <section id="seekerQuestionLocation" class="panel question-origin-panel hidden">
+            <div class="row-between"><div><div class="eyebrow">QUESTION ORIGIN</div><h3>Where are the seekers?</h3></div><span id="questionOriginStatus" class="mini-status">GPS for each question</span></div>
+            <div class="segmented origin-segmented">
+              <button id="originGpsMode" class="segment active" data-origin-mode="gps">Automatic current location</button>
+              <button id="originMapMode" class="segment" data-origin-mode="map">Choose manually on map</button>
+            </div>
+            <p class="hint">The chosen origin is attached to the question. Manual mode asks you to tap the map after choosing a question. GPS mode obtains a fresh browser position immediately before preview/confirmation.</p>
+          </section>
+
+          <section class="question-menu panel">
+            <div class="row-between question-menu-heading">
+              <div><div class="eyebrow">QUESTION DECK</div><h3>Choose a question</h3></div>
+              <span id="questionDeckStatus" class="mini-status"></span>
+            </div>
+            <p class="hint question-menu-hint">Asked cards are greyed out on both screens. Tentacles load their POIs from Overpass and preview them before the question is sent.</p>
+            <div id="questionDeck" class="question-deck"></div>
+          </section>
+        </div>
+
+        <aside class="side-column">
+          <div id="seekerControls" class="role-controls hidden">
+            <div class="panel compact">
+              <h3>Latest question location</h3>
+              <div id="seekerLocationStatus" class="status-box">No question location has been sent.</div>
+              <p class="hint">GPS accuracy is shown when available. Manual coordinates are intentionally accepted when underground GPS is unreliable.</p>
+            </div>
+            <div class="panel compact">
+              <div class="row-between"><h3>Thermometer start</h3><span id="thermoStatus" class="mini-status">None</span></div>
+              <p class="hint">Set point A from a fresh GPS reading or map tap. A 250 m / 500 m / 2 km Thermometer can only be sent after moving at least that distance.</p>
+              <div class="location-row"><button id="setThermoGpsButton" class="secondary">Set with GPS</button><button id="setThermoMapButton" class="secondary">Set on map</button></div>
+            </div>
+          </div>
+
+          <div id="hiderControls" class="role-controls hidden">
+            <div class="panel compact private-panel">
+              <div class="row-between"><h3>Private hider phase</h3><span class="private-badge">HIDER ONLY</span></div>
+              <div id="hiderSecretStatus" class="status-box"></div>
+              <button id="toggleEndgameButton" class="primary full"></button>
+              <p class="hint">This phase flag is kept only in the protected hider record and is never exposed to seeker clients. Station phase answers use the selected station; endgame answers use the exact hiding coordinate.</p>
+            </div>
+            <div class="panel compact">
+              <h3>Pending questions</h3>
+              <div id="pendingQuestions" class="question-list"></div>
+            </div>
+            <div class="panel compact">
+              <div class="row-between"><h3>Hider hand &amp; draws</h3><span id="bonusTotal" class="mini-status"></span></div>
+              <p class="hint">Radar/Thermometer: draw 2 keep 1. Tentacles: draw 4 keep 2. Known Jet Lag-style time bonuses, vetoes, Duplicate, Time Traps and curses are seeded into the deck.</p>
+              <div id="curseDraws" class="curse-draw-list"></div>
+            </div>
+            <div class="panel compact">
+              <h3>Time traps</h3>
+              <div id="timeTraps" class="question-list"></div>
+            </div>
+          </div>
+
+          <div class="panel compact active-curse-panel">
+            <div class="row-between"><h3>Active cards / curses</h3><span id="serverClockStatus" class="mini-status"></span></div>
+            <div id="activeCurses" class="curse-list"></div>
+          </div>
+
+          <div class="panel compact">
+            <div class="row-between"><h3>Activity</h3><span id="remainingAreaText" class="mini-status"></span></div>
+            <p class="hint">Public game actions can be undone/redone after confirmation. Secret hider operations have corresponding private controls.</p>
+            <div id="activityHistory" class="question-list"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <div id="confirmModal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="modal-card">
+        <h3 id="confirmTitle">Confirm action</h3>
+        <p id="confirmMessage"></p>
+        <div class="modal-actions"><button id="confirmCancel" class="secondary">Cancel</button><button id="confirmOk" class="primary">Confirm</button></div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+  <script src="https://unpkg.com/@turf/turf@7.2.0/turf.min.js"></script>
+  <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./config.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
