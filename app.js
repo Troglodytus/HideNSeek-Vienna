@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.3.2';
+  const APP_VERSION = '3.3.3';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -20,6 +20,12 @@
   const REF_POI_PREFIX='vienna_poi_';
   const VIENNA_WFS_BASE='https://data.wien.gv.at/daten/geo';
   const VIENNA_BBOX='48.117668,16.18218,48.322571,16.577511';
+  const REFRESH_GRID_ROWS=4;
+  const REFRESH_GRID_COLS=4;
+  const REFRESH_CHUNK_MAX_AGE_DAYS=7;
+  const REF_RAW_TRANSIT_LINES='vienna_raw_transit_lines_v1';
+  const REF_RAW_UBAHN_STOPS='vienna_raw_ubahn_stops_v1';
+  const REF_RAW_ALL_STOPS='vienna_raw_all_stops_v1';
   const VIENNA_DISTRICTS_LAYER='BEZIRKSGRENZEOGD';
   const VIENNA_TRANSIT_LINES_LAYER='OEFFLINIENOGD';
   const VIENNA_TRANSIT_STOPS_LAYER='OEFFHALTESTOGD';
@@ -194,8 +200,8 @@
     for(const [k,v] of Object.entries(params))if(v!==undefined&&v!==null)u.searchParams.set(k,String(v));
     return u.toString();
   }
-  async function fetchViennaWfs(layer,label=layer){
-    const url=wfsUrl(layer);
+  async function fetchViennaWfs(layer,label=layer,extra={}){
+    const url=wfsUrl(layer,extra);
     const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),25000);
     try{
       const r=await fetch(url,{cache:'no-store',signal:controller.signal});
@@ -424,13 +430,7 @@
       } catch(_){}
     }
 
-    toast('Reference data has not been seeded yet; using official Vienna WFS once. Seed Developer data to make later loads immediate.',5000);
-    const boundary=await fetchOfficialAdminData();
-    const bundle=await fetchOfficialTransitBundle(boundary.city);
-    state.mapData={city:boundary.city,districts:boundary.districts,stations:bundle.stations,railLines:bundle.railLines};
-    localStorage.setItem(CACHE_KEY,JSON.stringify({city:boundary.city,districts:boundary.districts,stations:bundle.stations}));localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
-    localStorage.setItem(RAIL_CACHE_KEY,JSON.stringify(bundle.railLines));localStorage.setItem(RAIL_CACHE_TS_KEY,String(Date.now()));
-    return state.mapData;
+    throw new Error('Vienna reference data are not fully seeded in Supabase yet. Open Developer → Refresh districts + stations + network. The v3.3.3 refresh is resumable and stores each small tile immediately.');
   }
 
   const U_LINE_COLOURS={U1:'#e20613',U2:'#a862a4',U3:'#ef7c00',U4:'#009540',U5:'#008c95',U6:'#9d6930'};
@@ -721,15 +721,7 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
     }catch(e){console.warn('POI reference lookup failed',type,e);}
     const key=POI_CACHE_PREFIX+type,cached=localStorage.getItem(key);
     if(cached){try{const obj=JSON.parse(cached);if(Array.isArray(obj.pois)){state.poiCache[type]=obj.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];}}catch(_){}}
-    toast(`${humanize(type)} reference data is missing; loading the authoritative/fallback source once. Refresh Developer data to cache it centrally.`,5000);
-    let raw;
-    if(WFS_POI_LAYERS[type])raw=(await fetchOfficialPoi(type)).pois;
-    else{
-      const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No data source for ${type}.`);
-      const query=`[out:json][timeout:30];nwr${filter}(${VIENNA_BBOX});out center tags;`;
-      const osm=await fetchOverpass(query,`${humanize(type)} Tentacle query`,35000);raw=parsePoiElements(osm,type);
-    }
-    localStorage.setItem(key,JSON.stringify({ts:Date.now(),pois:raw}));state.poiCache[type]=raw.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];
+    throw new Error(`${humanize(type)} reference data are not fully seeded in Supabase. Open Developer and refresh that category; gameplay no longer performs large live Overpass/WFS queries.`);
   }
   function parsePoiElements(osm,type){
     return (osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
@@ -1050,6 +1042,107 @@ From the next question onward, automatic answer previews use this actual locatio
     const {data,error}=await state.supabase.rpc('admin_save_reference_dataset_v1',{p_password:state.developerPassword,p_dataset_key:key,p_payload:payload,p_source:source,p_content_hash:hash});
     if(error)throw error;return data;
   }
+  function refreshGrid(rows=REFRESH_GRID_ROWS,cols=REFRESH_GRID_COLS){
+    const [south,west,north,east]=VIENNA_BBOX.split(',').map(Number);
+    const dLat=(north-south)/rows,dLng=(east-west)/cols,out=[];
+    for(let r=0;r<rows;r++)for(let c=0;c<cols;c++){
+      const s=south+r*dLat,n=south+(r+1)*dLat,w=west+c*dLng,e=west+(c+1)*dLng;
+      out.push({id:`r${r}c${c}`,row:r,col:c,south:s,west:w,north:n,east:e,overpass:`${s},${w},${n},${e}`,wfs:`${w},${s},${e},${n},EPSG:4326`});
+    }
+    return out;
+  }
+  function chunkDatasetKey(baseKey,tileId){return `${baseKey}__chunk_${tileId}`;}
+  async function referenceChunkRows(baseKey){
+    initSupabaseIfNeeded();
+    const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').like('dataset_key',`${baseKey}__chunk_%`).order('dataset_key');
+    if(error)throw error;return data||[];
+  }
+  function rowFresh(row){
+    const t=Date.parse(row?.checked_at||row?.updated_at||'');
+    return Number.isFinite(t) && Date.now()-t < REFRESH_CHUNK_MAX_AGE_DAYS*86400e3;
+  }
+  function stableFeatureKey(f){
+    const p=f?.properties||{};
+    const id=f?.id??p.OBJECTID??p.FID??p.OGC_FID??p.ID??p.OBJECTID_1;
+    if(id!==undefined&&id!==null)return String(id);
+    return JSON.stringify([f?.geometry?.type,f?.geometry?.coordinates,p.NAME??p.NAMEK??p.BEZEICHNUNG??'']);
+  }
+  function mergeFeatureCollections(rows){
+    const seen=new Set(),features=[];
+    for(const row of rows){
+      for(const f of (row?.payload?.features||[])){const k=stableFeatureKey(f);if(seen.has(k))continue;seen.add(k);features.push(f);}
+    }
+    return {type:'FeatureCollection',features};
+  }
+  function mergePoiRows(rows){
+    const by=new Map();
+    for(const row of rows)for(const p of (row?.payload?.pois||[])){
+      const k=String(p.id||`${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)},${p.name||''}`);
+      if(!by.has(k))by.set(k,p);
+    }
+    return {pois:[...by.values()]};
+  }
+  async function saveChunk(baseKey,tile,payload,source){return saveReferenceDataset(chunkDatasetKey(baseKey,tile.id),payload,source);}
+  async function fetchWfsTile(layer,label,tile){return fetchViennaWfs(layer,`${label} · ${tile.id}`,{bbox:tile.wfs});}
+  async function refreshWfsLayerChunks(baseKey,layer,label,statusEl,{force=false}={}){
+    const tiles=refreshGrid();const existing=await referenceChunkRows(baseKey);const by=new Map(existing.map(r=>[r.dataset_key,r]));const failures=[];let saved=0,skipped=0;
+    for(let i=0;i<tiles.length;i++){
+      const tile=tiles[i],key=chunkDatasetKey(baseKey,tile.id),old=by.get(key);
+      if(!force&&old&&rowFresh(old)){skipped++;statusEl.textContent=`${label}: tile ${i+1}/${tiles.length} already cached`;continue;}
+      statusEl.textContent=`${label}: downloading tile ${i+1}/${tiles.length} (${tile.id})…`;
+      try{const geo=await fetchWfsTile(layer,label,tile);await saveChunk(baseKey,tile,{features:geo.features||[]},`Stadt Wien WFS · ${layer} · ${tile.id}`);saved++;}
+      catch(e){failures.push(`${tile.id}: ${e.message}`);console.warn(label,tile.id,e);}
+      await new Promise(r=>setTimeout(r,120));
+    }
+    const rows=await referenceChunkRows(baseKey);const have=new Set(rows.map(r=>r.dataset_key));const missing=tiles.filter(t=>!have.has(chunkDatasetKey(baseKey,t.id)));
+    return {rows,tiles,missing,failures,saved,skipped,complete:missing.length===0};
+  }
+  async function fetchPoiTile(type,tile){
+    const filter=POI_QUERIES[type];if(!filter)throw new Error(`No data source for ${type}.`);
+    const layer=WFS_POI_LAYERS[type];
+    if(layer){
+      try{
+        const geo=await fetchWfsTile(layer,`${humanize(type)} (Stadt Wien)`,tile);
+        return {pois:(geo.features||[]).map((f,i)=>featureToPoi(f,type,i)).filter(Boolean),source:`Stadt Wien WFS · ${layer}`};
+      }catch(e){console.warn(`${humanize(type)} WFS tile ${tile.id} failed, falling back to small Overpass tile`,e);}
+    }
+    const q=`[out:json][timeout:20];nwr${filter}(${tile.overpass});out center tags qt;`;
+    const osm=await fetchOverpass(q,`${humanize(type)} tile ${tile.id}`,25000);
+    return {pois:parsePoiElements(osm,type),source:'OpenStreetMap / Overpass'};
+  }
+  async function refreshPoiChunked(type,statusEl,{force=false}={}){
+    const finalKey=REF_POI_PREFIX+type+'_v1',tiles=refreshGrid();const existing=await referenceChunkRows(finalKey);const by=new Map(existing.map(r=>[r.dataset_key,r]));const failures=[];let saved=0,skipped=0;
+    for(let i=0;i<tiles.length;i++){
+      const tile=tiles[i],key=chunkDatasetKey(finalKey,tile.id),old=by.get(key);
+      if(!force&&old&&rowFresh(old)){skipped++;statusEl.textContent=`${humanize(type)}: tile ${i+1}/${tiles.length} already cached`;continue;}
+      statusEl.textContent=`${humanize(type)}: downloading tile ${i+1}/${tiles.length} (${tile.id})…`;
+      try{const part=await fetchPoiTile(type,tile);await saveChunk(finalKey,tile,{pois:part.pois},`${part.source} · ${tile.id}`);saved++;}
+      catch(e){failures.push(`${tile.id}: ${e.message}`);console.warn(type,tile.id,e);}
+      await new Promise(r=>setTimeout(r,180));
+    }
+    const rows=await referenceChunkRows(finalKey);const have=new Set(rows.map(r=>r.dataset_key));const missing=tiles.filter(t=>!have.has(chunkDatasetKey(finalKey,t.id)));
+    if(!missing.length){const merged=mergePoiRows(rows);await saveReferenceDataset(finalKey,merged,`Chunked Vienna refresh · ${tiles.length} tiles`);return {complete:true,missing,failures,saved,skipped,count:merged.pois.length};}
+    return {complete:false,missing,failures,saved,skipped,count:mergePoiRows(rows).pois.length};
+  }
+  async function refreshTransitChunked(city,statusEl,{force=false}={}){
+    const defs=[
+      [REF_RAW_TRANSIT_LINES,VIENNA_TRANSIT_LINES_LAYER,'Transit lines'],
+      [REF_RAW_UBAHN_STOPS,VIENNA_UBAHN_STOPS_LAYER,'U-Bahn stops'],
+      [REF_RAW_ALL_STOPS,VIENNA_TRANSIT_STOPS_LAYER,'Public transport stops']
+    ];
+    const results=[];
+    for(const [base,layer,label] of defs)results.push(await refreshWfsLayerChunks(base,layer,label,statusEl,{force}));
+    const [lineRows,uRows,sRows]=await Promise.all([referenceChunkRows(REF_RAW_TRANSIT_LINES),referenceChunkRows(REF_RAW_UBAHN_STOPS),referenceChunkRows(REF_RAW_ALL_STOPS)]);
+    const tiles=refreshGrid();const complete=[lineRows,uRows,sRows].every(rows=>new Set(rows.map(r=>r.dataset_key)).size>=tiles.length);
+    if(!complete)return {complete:false,results};
+    statusEl.textContent='Assembling cached transit chunks…';
+    const linesGeo=mergeFeatureCollections(lineRows),uGeo=mergeFeatureCollections(uRows),stopsGeo=mergeFeatureCollections(sRows);
+    const railLines=normalizeOfficialTransitLines(linesGeo);const stations=normalizeOfficialStations(uGeo,stopsGeo,railLines,city);
+    if(stations.length<20)throw new Error(`Chunked Vienna transport data produced only ${stations.length} U-/S-Bahn stations.`);
+    await saveReferenceDataset(REF_STATIONS_KEY,{stations},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
+    await saveReferenceDataset(REF_TRANSIT_KEY,{railLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
+    return {complete:true,results,stations:stations.length,lines:railLines.length};
+  }
   function normalizeOfficialDistricts(geo){
     const features=(geo?.features||[]).filter(isPolygon);const districts=[];
     for(const f of features){const p=f.properties||{};const n=Number(p.BEZNR??p.BEZ??p.beznr??p.bez);if(!Number.isInteger(n)||n<1||n>23)continue;districts.push({feature:f,number:n,name:p.BEZ_NAMEG||p.NAMEG||p.NAMEK||p.BEZ_NAME||p.name||`${n}. Bezirk`});}
@@ -1080,42 +1173,47 @@ From the next question onward, automatic answer previews use this actual locatio
     const bundle=await fetchOfficialTransitBundle(city);
     return {railLines:bundle.railLines};
   }
-  async function refreshOnePoi(type){
-    if(WFS_POI_LAYERS[type])return await fetchOfficialPoi(type);
-    const filter=POI_QUERIES[type];
-    const q=`[out:json][timeout:30];nwr${filter}(${VIENNA_BBOX});out center tags;`;
-    const osm=await fetchOverpass(q,`${humanize(type)} refresh`,40000);
-    return {pois:parsePoiElements(osm,type)};
+  async function refreshOnePoi(type,statusEl=$('developerReferenceStatus'),options={}){
+    return refreshPoiChunked(type,statusEl,options);
   }
-  async function refreshReferenceData(scope='core'){
+  async function refreshReferenceData(scope='core',options={}){
     if(!state.developerPassword)return toast('Log in to Developer first.');
-    const status=$('developerReferenceStatus');status.textContent=`v${APP_VERSION} · Refreshing…`;
-    const results=[];const failures=[];
+    const status=$('developerReferenceStatus');status.textContent=`v${APP_VERSION} · Resumable refresh starting…`;
+    const failures=[];let changed=0;
     if(scope==='core'||scope==='all'){
+      let admin=null;
       try{
         status.textContent='Refreshing official Vienna districts…';
-        const admin=await fetchOfficialAdminData();results.push(await saveReferenceDataset(REF_ADMIN_KEY,admin,'Stadt Wien WFS · BEZIRKSGRENZEOGD'));
-        status.textContent='Refreshing official U-Bahn / S-Bahn network and stations…';
-        const bundle=await fetchOfficialTransitBundle(admin.city);
-        results.push(await saveReferenceDataset(REF_STATIONS_KEY,{stations:bundle.stations},'Stadt Wien WFS · UBAHNHALTOGD + OEFFHALTESTOGD'));
-        results.push(await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:bundle.railLines},'Stadt Wien WFS · OEFFLINIENOGD'));
-      }catch(e){failures.push(`Core: ${e.message}`);}
+        admin=await fetchOfficialAdminData();await saveReferenceDataset(REF_ADMIN_KEY,admin,'Stadt Wien official districts');changed++;
+      }catch(e){failures.push(`Districts: ${e.message}`);}
+      if(admin){
+        try{
+          const tr=await refreshTransitChunked(admin.city,status,options);
+          if(!tr.complete){const miss=tr.results.flatMap(x=>x.missing||[]).length;failures.push(`Transit cache is incomplete (${miss} tile-layer chunks still missing). Run refresh again; completed chunks are already saved.`);}
+          else changed+=2;
+        }catch(e){failures.push(`Transit: ${e.message}`);}
+      }
     }
     if(scope==='pois'||scope==='all'){
       for(const type of Object.keys(POI_QUERIES)){
         try{
-          status.textContent=`Refreshing ${humanize(type)}…`;
-          const payload=await refreshOnePoi(type);
-          const source=WFS_POI_LAYERS[type]?`Stadt Wien WFS · ${WFS_POI_LAYERS[type]}`:'OpenStreetMap / Overpass (Vienna bbox)';
-          results.push(await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',payload,source));
+          const r=await refreshPoiChunked(type,status,options);
+          if(r.complete)changed++;
+          else failures.push(`${humanize(type)}: ${r.missing.length}/${refreshGrid().length} tiles still missing. Run refresh again; successful tiles are already stored.`);
         }catch(e){failures.push(`${humanize(type)}: ${e.message}`);}
       }
     }
     state.mapData=null;state.poiCache={};
-    const changed=results.filter(x=>x==='updated'||x==='created').length,unchanged=results.filter(x=>x==='unchanged').length;
-    status.textContent=`v${APP_VERSION} · ${changed} changed/new, ${unchanged} unchanged${failures.length?`, ${failures.length} failed`:''}`;
-    if(failures.length)toast(`Some refreshes failed:\n${failures.join('\n')}`,8000);
+    status.textContent=`v${APP_VERSION} · refresh finished · ${changed} assembled dataset${changed===1?'':'s'}${failures.length?` · ${failures.length} incomplete/failed`:''}`;
+    if(failures.length)toast(`Refresh is resumable. Some parts are still incomplete:
+${failures.join('\n')}`,9000);
     await loadDeveloperDashboard();
+  }
+  async function refreshSelectedPoi(){
+    if(!state.developerPassword)return toast('Log in to Developer first.');
+    const type=$('developerPoiSelect')?.value;if(!type)return;const status=$('developerReferenceStatus');
+    try{const r=await refreshPoiChunked(type,status,{});status.textContent=r.complete?`${humanize(type)} complete · ${r.count} POIs`:`${humanize(type)} partial · ${r.missing.length} tiles missing`;if(!r.complete)toast('Partial data were saved. Press the same refresh again to retry only missing/old tiles.',6000);await loadDeveloperDashboard();}
+    catch(e){handleError(e);}
   }
   async function importBrowserReferenceCache(){
     if(!state.developerPassword)return;
@@ -1153,7 +1251,7 @@ From the next question onward, automatic answer previews use this actual locatio
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
-    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);
+    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshOnePoi')?.addEventListener('click',()=>refreshSelectedPoi().catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);
     document.querySelector('[data-action="open-hider"]').addEventListener('click',()=>openLobby('hider'));document.querySelector('[data-action="open-seeker"]').addEventListener('click',()=>openLobby('seeker'));document.querySelector('[data-action="home"]').addEventListener('click',()=>showView('homeView'));document.querySelector('[data-action="leave-game"]').addEventListener('click',leaveGame);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});

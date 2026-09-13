@@ -73,7 +73,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.3.2</div><h2>Administration &amp; reference data</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.3.3</div><h2>Administration &amp; reference data</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -89,9 +89,18 @@
               <div class="developer-actions">
                 <button id="developerImportCache" class="secondary">Import this browser's existing cache</button>
                 <button id="developerRefreshCore" class="secondary">Refresh districts + stations + network</button>
-                <button id="developerRefreshPois" class="secondary">Refresh Tentacle POIs</button>
+                <button id="developerRefreshPois" class="secondary">Resume all Tentacle POIs</button>
                 <button id="developerRefreshAll" class="primary">Refresh everything</button>
               </div>
+
+              <div class="developer-actions">
+                <select id="developerPoiSelect" aria-label="Tentacle POI category">
+                  <option value="museum">Museums</option><option value="park">Parks</option><option value="library">Libraries</option><option value="cinema">Cinemas</option>
+                  <option value="hospital">Hospitals</option><option value="zoo">Zoos</option><option value="aquarium">Aquariums</option><option value="amusement_park">Amusement parks</option>
+                </select>
+                <button id="developerRefreshOnePoi" class="secondary">Resume selected POI category</button>
+              </div>
+              <p class="hint">v3.3.3 downloads Vienna in 16 small geographic tiles. Every successful tile is saved immediately to Supabase; if one times out, press Resume again and only missing/old tiles are retried.</p>
               <div id="developerReferenceList" class="reference-list"></div>
             </section>
             <section class="panel">
@@ -226,6 +235,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.3.2"></script>
+  <script src="./app.js?v=3.3.3"></script>
 </body>
 </html>

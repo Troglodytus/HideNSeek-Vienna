@@ -1,3 +1,14 @@
+# Vienna Hide & Seek v3.3.3
+
+This hotfix changes reference-data refreshes to a resumable, chunked workflow. Vienna is split into a 4×4 grid (16 tiles). Each successful tile is immediately saved as its own row in the existing Supabase `reference_datasets` table. No new SQL migration is required if v3.3.0 was already installed.
+
+- Core transit refresh: U-/S-Bahn line geometry, U-Bahn stops and public-transport stops are fetched tile-by-tile from Stadt Wien WFS and stored immediately. Once all tile chunks exist, they are assembled into `vienna_stations_v1` and `vienna_transit_v1`.
+- Tentacle POIs: each category is refreshed tile-by-tile. Official Vienna WFS is preferred where available; a small-bbox Overpass query is used as fallback. The aggregate POI dataset is assembled only when all 16 chunks exist, preventing an incomplete Tentacle dataset from silently becoming authoritative.
+- Refreshes are resumable: fresh chunks are skipped for seven days. A timeout therefore does not discard completed work.
+- Gameplay no longer falls back to large live WFS/Overpass requests when reference data are missing; it asks you to seed/resume the Developer cache instead.
+
+Update `app.js` + `index.html`; keep the existing `config.js`. No SQL migration is needed for this version.
+
 # Vienna Hide & Seek MVP v3.3.2
 
 Hotfix over v3.3.1:
