@@ -1,4 +1,4 @@
-# Vienna Hide & Seek v3.3.3
+# Vienna Hide & Seek v3.3.4
 
 This hotfix changes reference-data refreshes to a resumable, chunked workflow. Vienna is split into a 4×4 grid (16 tiles). Each successful tile is immediately saved as its own row in the existing Supabase `reference_datasets` table. No new SQL migration is required if v3.3.0 was already installed.
 
@@ -97,3 +97,7 @@ OSM `admin_level=9` remains a fallback because this is the documented OSM level 
 - Remaining OSM-only Tentacle categories use a fixed Vienna bounding-box Overpass query instead of an Overpass area lookup.
 - Reference refresh continues through individual POI failures instead of aborting the entire job.
 - No new Supabase migration is needed beyond the v3.3.0 migration.
+
+
+## v3.3.4 transport finalization fix
+The chunk downloads were completing, but the browser could freeze while assembling the transport cache because older code tested every public-transport stop against every U-/S-Bahn geometry. This build uses Vienna's own `LINFO` (U-Bahn) and `HLINIEN` (S-Bahn) attributes instead. Existing 16/16 raw chunks are reused; no redownload is needed while they are fresh.

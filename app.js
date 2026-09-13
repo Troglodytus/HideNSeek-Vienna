@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.3.3';
+  const APP_VERSION = '3.3.4';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -296,18 +296,32 @@
     return [...best.entries()].sort((a,b)=>a[1]-b[1]).map(x=>x[0]);
   }
   function normalizeOfficialStations(ubahnGeo,allStopsGeo,railLines,city){
+    // v3.3.4: use the authoritative line attributes on the Vienna stop layers.
+    // Previous builds tried to infer S-Bahn membership by measuring every one of
+    // ~8,600 public-transport stops against every rail line. That was >1M Turf
+    // point-to-line calculations and could freeze the browser after tile 16/16.
     const raw=[];
-    const add=(f,mode,maxM,prefix)=>{
-      const pt=pointFromFeature(f);if(!pt)return;
-      try{if(city&&!turf.booleanPointInPolygon(pt,city))return;}catch(_){}
+    const insideCity=(pt)=>{try{return !city||turf.booleanPointInPolygon(pt,city);}catch(_){return true;}};
+    const push=(f,mode,refs)=>{
+      refs=[...new Set((refs||[]).filter(Boolean))];if(!refs.length)return;
       const name=stationNameFromProps(f.properties||{});if(!name)return;
-      const propRefs=lineRefsFromProps(f.properties||{}).filter(r=>prefix.test(r));
-      const nearRefs=nearestRefsForPoint(pt,railLines,prefix,maxM);
-      const refs=[...new Set([...propRefs,...nearRefs])];if(!refs.length)return;
+      const pt=pointFromFeature(f);if(!pt||!insideCity(pt))return;
       raw.push({pt,name,refs,mode});
     };
-    for(const f of (ubahnGeo?.features||[]))add(f,'subway',180,/^U[1-6]$/);
-    for(const f of (allStopsGeo?.features||[]))add(f,'rail',130,/^S\d{1,2}$/);
+    // UBAHNHALTOGD provides LINFO as the U-Bahn line number (1..6).
+    for(const f of (ubahnGeo?.features||[])){
+      const p=f.properties||{};const n=Number(p.LINFO??p.linfo);
+      const refs=(Number.isInteger(n)&&n>=1&&n<=6)?[`U${n}`]:lineRefsFromProps(p).filter(r=>/^U[1-6]$/.test(r));
+      push(f,'subway',refs);
+    }
+    // OEFFHALTESTOGD provides HLINIEN, e.g. "S1,S2,S3,S4,S7,S80".
+    // Filter by the attribute FIRST so bus/tram stops never enter geometry work.
+    for(const f of (allStopsGeo?.features||[])){
+      const p=f.properties||{};
+      const refs=lineRefsFromText(String(p.HLINIEN??p.hlinien??'')).filter(r=>/^S\d{1,2}$/.test(r));
+      if(!refs.length)continue;
+      push(f,'rail',refs);
+    }
     const groups=new Map();
     for(const r of raw){
       const key=r.name.toLocaleLowerCase('de-AT').replace(/\s+/g,' ').trim();
@@ -1136,10 +1150,18 @@ From the next question onward, automatic answer previews use this actual locatio
     const tiles=refreshGrid();const complete=[lineRows,uRows,sRows].every(rows=>new Set(rows.map(r=>r.dataset_key)).size>=tiles.length);
     if(!complete)return {complete:false,results};
     statusEl.textContent='Assembling cached transit chunks…';
+    await new Promise(r=>setTimeout(r,0));
     const linesGeo=mergeFeatureCollections(lineRows),uGeo=mergeFeatureCollections(uRows),stopsGeo=mergeFeatureCollections(sRows);
-    const railLines=normalizeOfficialTransitLines(linesGeo);const stations=normalizeOfficialStations(uGeo,stopsGeo,railLines,city);
+    statusEl.textContent='Building U-Bahn/S-Bahn network…';
+    await new Promise(r=>setTimeout(r,0));
+    const railLines=normalizeOfficialTransitLines(linesGeo);
+    statusEl.textContent='Building station list from Vienna line attributes…';
+    await new Promise(r=>setTimeout(r,0));
+    const stations=normalizeOfficialStations(uGeo,stopsGeo,railLines,city);
     if(stations.length<20)throw new Error(`Chunked Vienna transport data produced only ${stations.length} U-/S-Bahn stations.`);
+    statusEl.textContent=`Saving ${stations.length} stations…`;
     await saveReferenceDataset(REF_STATIONS_KEY,{stations},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
+    statusEl.textContent=`Saving ${railLines.length} U-/S-Bahn line segments…`;
     await saveReferenceDataset(REF_TRANSIT_KEY,{railLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
     return {complete:true,results,stations:stations.length,lines:railLines.length};
   }
