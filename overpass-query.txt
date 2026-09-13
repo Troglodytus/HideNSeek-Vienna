@@ -1,31 +1,39 @@
-# v3.1.3: stations load first; boundary and rail geometry are background enhancements.
+# v3.2: Vienna U-Bahn + passenger rail only. No tram/light-rail overlay.
+# Vienna OSM relation: 109166; Overpass area: 3600109166.
 
-# 1) Stations first (required before game creation)
-[out:json][timeout:25];
-nwr["railway"~"^(station|halt)$"]["access"!="private"](48.08,16.18,48.34,16.62);
+# 1) Vienna boundary + districts
+[out:json][timeout:45];
+area(3600109166)->.vienna;
+(
+  relation(109166);
+  relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
+);
+out geom;
+
+# 2) Selectable stations: U-Bahn and passenger train stations only
+[out:json][timeout:45];
+area(3600109166)->.vienna;
+(
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["station"="subway"]["access"!="private"];
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["subway"="yes"]["access"!="private"];
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["train"="yes"]["tram"!="yes"]["access"!="private"];
+  nwr(area.vienna)["public_transport"="station"]["train"="yes"]["tram"!="yes"]["access"!="private"];
+);
 out center tags;
 
-# 2) Vienna boundary + 23 districts (background enhancement)
-[out:json][timeout:45];
-(
-  relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"](48.08,16.18,48.34,16.62);
-  relation["boundary"="administrative"]["admin_level"="9"](48.08,16.18,48.34,16.62);
-);
-out body;
->;
-out skel qt;
+# The web app collapses same-named OSM station elements to ONE selectable marker.
 
-# 3) Rail overlay (optional/background; failure never blocks the game)
+# 3) Transit line overlay: subway + ordinary rail; explicitly no tram/light_rail
 [out:json][timeout:60];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+area(3600109166)->.vienna;
 (
-  way(area.vienna)["railway"~"^(subway|light_rail)$"];
+  way(area.vienna)["railway"="subway"];
   way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
 );
 out geom tags;
 
-# Tentacle queries are also small on-demand requests, e.g. parks:
+# Tentacle example: parks
 # [out:json][timeout:45];
-# area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+# area(3600109166)->.vienna;
 # nwr(area.vienna)["leisure"="park"];
 # out center tags;

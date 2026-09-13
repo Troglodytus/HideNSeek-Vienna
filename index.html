@@ -7,7 +7,7 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css" />
+  <link rel="stylesheet" href="./styles.css?v=3.1.3" />
 </head>
 <body>
   <main id="app">
@@ -20,7 +20,7 @@
           <button class="mode-button hider" data-action="open-hider">Hider</button>
           <button class="mode-button seeker" data-action="open-seeker">Seeker</button>
         </div>
-        <p class="fineprint">OpenStreetMap / Overpass · Vienna rail &amp; U-Bahn · 250 m base hiding zone</p>
+        <p class="fineprint">OpenStreetMap / Overpass · Vienna U-Bahn + passenger rail · 250 m base hiding zone</p>
       </div>
     </section>
 
@@ -43,21 +43,12 @@
 
             <div class="setup-step">
               <div class="step-number">1</div>
-              <div><strong>Choose the hiding station</strong><div class="hint">Tap a rail/U-Bahn station marker. During the long game, this station coordinate is the secret target used to answer questions.</div></div>
+              <div><strong>Choose the secret station</strong><div class="hint">Choose an U-Bahn or passenger-rail station from the list, or tap its marker on the map. During the main game, every answer is calculated against this station coordinate.</div></div>
             </div>
+            <label>Station<select id="createStationSelect"><option value="">Loading stations…</option></select></label>
             <div id="createStationStatus" class="status-box">No station selected.</div>
-
-            <div class="setup-step">
-              <div class="step-number">2</div>
-              <div><strong>Choose the actual hiding spot</strong><div class="hint">The exact spot must be within 250 m of the selected station. It remains secret until the hider privately switches into endgame.</div></div>
-            </div>
-            <div class="location-row">
-              <button id="createGpsButton" class="secondary">Use my GPS</button>
-              <button id="createPickButton" class="secondary">Pick spot on map</button>
-            </div>
-            <div id="createLocationStatus" class="status-box">No actual hiding spot selected yet.</div>
             <div id="createMap" class="map map-small"></div>
-            <p class="hint">Station selection and the exact hiding coordinate are protected server-side. Seekers receive neither value.</p>
+            <p class="hint">You do not choose the final hiding spot yet. The hider can keep moving within the eventual 250 m station zone and only sets the actual hiding coordinate when privately starting Endgame.</p>
             <button id="createGameButton" class="primary full">Create game</button>
           </div>
 
@@ -92,7 +83,7 @@
             <div class="map-legend">
               <span><i class="swatch possible"></i> possible</span>
               <span><i class="swatch excluded"></i> excluded</span>
-              <span><i class="swatch rail"></i> rail / U-Bahn</span>
+              <span><i class="swatch subway"></i> U-Bahn</span><span><i class="swatch rail"></i> S-Bahn / rail</span>
               <span><i class="swatch poi"></i> Tentacle POI</span>
             </div>
           </div>
@@ -134,8 +125,13 @@
             <div class="panel compact private-panel">
               <div class="row-between"><h3>Private hider phase</h3><span class="private-badge">HIDER ONLY</span></div>
               <div id="hiderSecretStatus" class="status-box"></div>
+              <div id="endgameLocationControls">
+                <p class="hint"><strong>Only when the seekers have reached the correct station:</strong> choose your actual hiding location. It must lie inside the current station hiding radius and remains completely private.</p>
+                <div class="location-row"><button id="endgameGpsButton" class="secondary">Use my current GPS</button><button id="endgamePickButton" class="secondary">Pick hiding spot on map</button></div>
+                <div id="endgameLocationStatus" class="status-box">No final hiding spot selected yet.</div>
+              </div>
               <button id="toggleEndgameButton" class="primary full"></button>
-              <p class="hint">This phase flag is kept only in the protected hider record and is never exposed to seeker clients. Station phase answers use the selected station; endgame answers use the exact hiding coordinate.</p>
+              <p class="hint">Starting Endgame is manual and secret. Before it starts, answer previews use the station. After it starts, they use the chosen actual hiding coordinate. Seekers receive no phase flag or notification.</p>
             </div>
             <div class="panel compact">
               <h3>Pending questions</h3>
@@ -182,6 +178,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js"></script>
+  <script src="./app.js?v=3.2.0"></script>
 </body>
 </html>

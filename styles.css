@@ -80,7 +80,7 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .hint { font-size: 13px; color: var(--muted); line-height: 1.45; }
 .hint.strong { color: #374151; font-weight: 600; }
 
-.map { width: 100%; background: #d1d5db; }
+.map { width: 100%; background: #f8fafc; }
 .map-small { height: min(48vh, 430px); border-radius: 14px; overflow: hidden; margin-top: 12px; }
 .game-shell { display: grid; grid-template-columns: minmax(0, 1fr) 390px; align-items: start; min-height: calc(100dvh - 72px); }
 .main-column { min-width: 0; padding: 12px 0 20px 12px; }
@@ -129,7 +129,8 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .swatch { width: 12px; height: 12px; display: inline-block; border-radius: 3px; vertical-align: -2px; margin-right: 4px; }
 .swatch.possible { background: rgba(37,99,235,.32); border: 1px solid #2563eb; }
 .swatch.excluded { background: rgba(75,85,99,.55); }
-.swatch.rail { background: #111827; height: 3px; border-radius: 0; }
+.swatch.subway { background: #2563eb; height: 4px; border-radius: 0; }
+.swatch.rail { background: #111827; height: 4px; border-radius: 0; }
 
 .curse-draw { border: 1px solid #ddd6fe; background: #faf5ff; border-radius: 14px; padding: 12px; }
 .curse-draw-title { font-weight: 850; margin-bottom: 8px; }
@@ -158,7 +159,15 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
 
 .leaflet-container { font: inherit; }
-.station-dot { background: white; border: 3px solid #111827; border-radius: 50%; width: 10px !important; height: 10px !important; margin-left: -5px !important; margin-top: -5px !important; }
+.leaflet-tile-pane .leaflet-tile { filter: saturate(.15) contrast(.94) brightness(1.06); }
+.minimal-basemap-tiles { filter: saturate(.15) contrast(.94) brightness(1.06); }
+.minimal-basemap-tiles.fallback-osm { filter: grayscale(1) saturate(0) contrast(.72) brightness(1.22) opacity(.72); }
+.station-dot { background: white; border: 4px solid #111827; border-radius: 50%; width: 18px !important; height: 18px !important; margin-left: -9px !important; margin-top: -9px !important; box-shadow: 0 1px 4px rgba(15,23,42,.28); }
+.station-dot.station-subway { border-color: #2563eb; }
+.station-dot.station-rail { border-color: #111827; }
+.station-dot.station-interchange { border-color: #7c3aed; box-shadow: 0 0 0 2px #fff, 0 0 0 4px #7c3aed; }
+.station-dot:hover { transform: scale(1.18); transform-origin: center; }
+
 
 @media (max-width: 1050px) {
   .game-shell { grid-template-columns: minmax(0, 1fr) 350px; }
@@ -194,7 +203,7 @@ button:disabled { opacity: .48; cursor: not-allowed; }
 .origin-segmented { margin:10px 0 0; }
 .private-panel { border-color:#ddd6fe; background:#faf5ff; }
 .private-badge { font-size:10px; letter-spacing:.08em; font-weight:850; color:#6d28d9; background:#ede9fe; padding:4px 7px; border-radius:999px; }
-.station-selected { background:#7c3aed; border:3px solid #fff; box-shadow:0 0 0 2px #7c3aed; border-radius:50%; width:14px!important; height:14px!important; margin-left:-7px!important; margin-top:-7px!important; }
+.station-selected { background:#7c3aed; border:4px solid #fff; box-shadow:0 0 0 3px #7c3aed; border-radius:50%; width:18px!important; height:18px!important; margin-left:-9px!important; margin-top:-9px!important; }
 .swatch.poi { background:#f59e0b; border:1px solid #92400e; }
 .poi-dot { background:#f59e0b; border:2px solid #fff; box-shadow:0 0 0 1px #92400e; border-radius:50%; width:11px!important; height:11px!important; margin-left:-5px!important; margin-top:-5px!important; }
 .question-card-button.loading { opacity:.65; }

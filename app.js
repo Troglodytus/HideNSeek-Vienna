@@ -4,13 +4,14 @@
   const CFG = window.HNS_CONFIG || {};
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
-  const VIENNA_BBOX = { south:48.08, west:16.18, north:48.34, east:16.62 };
+  const VIENNA_RELATION_ID = 109166;
+  const VIENNA_AREA_ID = 3600109166;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
-  const CACHE_KEY = 'hns_vienna_osm_v5';
-  const CACHE_TS_KEY = 'hns_vienna_osm_v5_ts';
-  const RAIL_CACHE_KEY = 'hns_vienna_rails_v1';
-  const RAIL_CACHE_TS_KEY = 'hns_vienna_rails_v1_ts';
+  const CACHE_KEY = 'hns_vienna_osm_v6';
+  const CACHE_TS_KEY = 'hns_vienna_osm_v6_ts';
+  const RAIL_CACHE_KEY = 'hns_vienna_rails_v2';
+  const RAIL_CACHE_TS_KEY = 'hns_vienna_rails_v2_ts';
   const POI_CACHE_PREFIX = 'hns_vienna_poi_v1_';
 
   const QUESTION_CARDS = [
@@ -47,7 +48,8 @@
 
   const state = {
     supabase:null, mapData:null, createMap:null, gameMap:null, mapLayers:{},
-    createStation:null, createPoint:null, createAccuracyM:null, createPickMode:false,
+    createStation:null,
+    endgameCandidate:null, endgameAccuracyM:null, endgamePickMode:false,
     role:null, game:null, hiderPassword:null, secret:null,
     actions:[], hiderDraws:[], timeTraps:[], privateCardUses:[],
     seekerOriginMode:'gps', seekerPoint:null, seekerAccuracyM:null, seekerMarker:null, seekerAccuracyCircle:null,
@@ -55,7 +57,7 @@
     possibleArea:null, baseAllowedArea:null, baseRadiusBuilt:null,
     poiCache:{}, tentaclePreview:null, pendingOverlay:null,
     realtimeChannel:null, timerId:null, pollId:null, serverOffsetMs:0,
-    overpassBadUntil:{}, boundaryLoadPromise:null, railLoadPromise:null,
+    overpassBadUntil:{}, railLoadPromise:null,
     confirmResolver:null
   };
 
@@ -89,8 +91,36 @@
     state.supabase=window.supabase.createClient(CFG.SUPABASE_URL,CFG.SUPABASE_ANON_KEY,{auth:{persistSession:false,autoRefreshToken:false}});
   }
 
-  function baseMapOptions(){ return {center:VIENNA_CENTER,zoom:VIENNA_ZOOM,zoomControl:true,minZoom:10,maxZoom:19}; }
-  function addBaseTiles(map){ L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>'}).addTo(map); }
+  function baseMapOptions(){ return {center:VIENNA_CENTER,zoom:VIENNA_ZOOM,zoomControl:true,minZoom:10,maxZoom:19,preferCanvas:true}; }
+  function addBaseTiles(map){
+    const cartoKey=String(CFG.CARTO_BASEMAP_KEY||'').trim();
+    const keySuffix=cartoKey?`?key=${encodeURIComponent(cartoKey)}`:'';
+    const sources=[
+      {url:`https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png${keySuffix}`,maxZoom:20,subdomains:'abcd',attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',className:'minimal-basemap-tiles'},
+      {url:'https://tile.openstreetmap.org/{z}/{x}/{y}.png',maxZoom:19,attribution:'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</a>',className:'minimal-basemap-tiles fallback-osm'},
+      {url:'https://tile.openstreetmap.de/{z}/{x}/{y}.png',maxZoom:19,attribution:'&copy; OpenStreetMap contributors · fallback tiles: openstreetmap.de',className:'minimal-basemap-tiles fallback-osm'}
+    ];
+    let active=null, sourceIndex=0, loadedAny=false, errorCount=0, switchTimer=null;
+    const activate=(idx)=>{
+      sourceIndex=idx; loadedAny=false; errorCount=0;
+      if(active)map.removeLayer(active);
+      const src=sources[idx];
+      active=L.tileLayer(src.url,{maxZoom:src.maxZoom,attribution:src.attribution,subdomains:src.subdomains,detectRetina:true,className:src.className||''});
+      active.on('tileload',()=>{loadedAny=true;clearTimeout(switchTimer);});
+      active.on('tileerror',()=>{
+        errorCount++;
+        if(errorCount>=3){
+          if(sourceIndex+1<sources.length){toast('Primary map tiles failed; switching basemap…',3500);activate(sourceIndex+1);}
+          else toast('Basemap tiles could not be loaded. Check browser tracking/ad blocking or network access.',6500);
+        }
+      });
+      active.addTo(map);
+      clearTimeout(switchTimer);
+      switchTimer=setTimeout(()=>{if(!loadedAny&&sourceIndex+1<sources.length){toast('Map tiles are slow; trying fallback basemap…',3500);activate(sourceIndex+1);}},6500);
+    };
+    activate(0);
+    setTimeout(()=>map.invalidateSize(),120);
+  }
   function isPolygon(f){ return f?.geometry && ['Polygon','MultiPolygon'].includes(f.geometry.type); }
   function safeArea(f){ try{return turf.area(f);}catch(_){return 0;} }
   function safeIntersect(a,b){ if(!a||!b)return null; try{return turf.intersect(turf.featureCollection([a,b]));}catch(e){console.warn('intersect',e);return null;} }
@@ -113,7 +143,7 @@
       const controller=new AbortController();
       const timer=setTimeout(()=>controller.abort(),timeoutMs);
       try{
-        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8',Accept:'application/json'},body:'data='+encodeURIComponent(query),signal:controller.signal});
+        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query),signal:controller.signal});
         clearTimeout(timer);
         if(!response.ok){
           const err=new Error(`${label}: ${endpoint} returned HTTP ${response.status}.`);
@@ -135,69 +165,38 @@
 
   function processBoundaryGeoJSON(geo){
     const features=geo.features||[];
-    const city=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='4'&&t.name==='Wien'&&isPolygon(f);}).sort((a,b)=>safeArea(b)-safeArea(a))[0];
-    if(!city)throw new Error('Could not identify the Vienna boundary.');
-    const districts=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='9'&&isPolygon(f);}).map(f=>({feature:f,number:districtNumber(f.properties?.tags||{}),name:(f.properties?.tags||{}).name||'District'})).filter(d=>d.number>=1&&d.number<=23);
+    const polygons=features.filter(isPolygon);
+    const city=polygons.find(f=>String(f.id||f.properties?.id||'').includes(String(VIENNA_RELATION_ID)))
+      || polygons.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&String(t.admin_level)==='4';}).sort((a,b)=>safeArea(b)-safeArea(a))[0]
+      || polygons.sort((a,b)=>safeArea(b)-safeArea(a))[0];
+    if(!city)throw new Error(`Vienna boundary relation ${VIENNA_RELATION_ID} was returned without usable polygon geometry.`);
+    const districts=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&String(t.admin_level)==='9'&&isPolygon(f);}).map(f=>({feature:f,number:districtNumber(f.properties?.tags||{}),name:(f.properties?.tags||{}).name||'District'})).filter(d=>d.number>=1&&d.number<=23);
     if(districts.length<20)console.warn(`Only ${districts.length} Vienna districts were returned.`);
     return {city,districts};
   }
 
   function parseStationElements(osm,city){
-    const stations=(osm.elements||[]).map((e,i)=>{
+    const groups=new Map();
+    for(const [i,e] of (osm.elements||[]).entries()){
       const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;
-      if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+      if(!Number.isFinite(lat)||!Number.isFinite(lng))continue;
       const tags=e.tags||{};
-      const p=turf.point([lng,lat],{stationName:tags.name||tags['name:de']||'Unnamed station',stationId:`${e.type||'element'}/${e.id??i}`,railway:tags.railway,subway:tags.subway||null});
-      try{if(city&&!turf.booleanPointInPolygon(p,city))return null;}catch(_){}
-      return p;
-    }).filter(Boolean);
-    const seen=new Set();
-    return stations.filter(s=>{const [lng,lat]=s.geometry.coordinates;const k=`${s.properties.stationName}|${lat.toFixed(5)}|${lng.toFixed(5)}`;if(seen.has(k))return false;seen.add(k);return true;});
-  }
-
-  function fallbackViennaCity(){
-    const {south,west,north,east}=VIENNA_BBOX;
-    return turf.polygon([[[west,south],[east,south],[east,north],[west,north],[west,south]]],{name:'Vienna (fallback extent)',fallback:true});
-  }
-
-  function saveMapData(){
-    if(!state.mapData)return;
-    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));
-    localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
-  }
-
-  function applyBoundaryData(boundary){
-    if(!state.mapData)return;
-    state.mapData.city=boundary.city;
-    state.mapData.districts=boundary.districts;
-    state.mapData.boundaryLoaded=true;
-    state.mapData.stations=state.mapData.stations.filter(s=>{try{return turf.booleanPointInPolygon(s,boundary.city);}catch(_){return true;}});
-    state.baseAllowedArea=null;state.baseRadiusBuilt=null;
-    saveMapData();
-    if(state.createMap){
-      drawReferenceLayers(state.createMap,'create-',f=>selectCreateStation(f));
-      state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8]});
+      const rawName=(tags.name||tags['name:de']||tags.uic_name||'').trim();
+      if(!rawName)continue;
+      const p=turf.point([lng,lat]);
+      try{if(city&&!turf.booleanPointInPolygon(p,city))continue;}catch(_){}
+      const subway=tags.station==='subway'||tags.subway==='yes';
+      const train=tags.train==='yes'||tags.station==='train'||(!subway&&['station','halt'].includes(tags.railway));
+      if(!subway&&!train)continue;
+      const key=rawName.toLocaleLowerCase('de-AT').replace(/\s+/g,' ').trim();
+      const g=groups.get(key)||{name:rawName,latSum:0,lngSum:0,count:0,modes:new Set(),ids:[]};
+      g.latSum+=lat;g.lngSum+=lng;g.count++;g.ids.push(`${e.type||'element'}/${e.id??i}`);
+      if(subway)g.modes.add('subway');if(train)g.modes.add('rail');
+      groups.set(key,g);
     }
-    if(state.gameMap){
-      drawReferenceLayers(state.gameMap,'game-',f=>{if(state.role==='hider'&&state.trapPlacementCard)placeTimeTrapAtStation(f).catch(handleError);});
-      state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[5,5]});
-      recomputePossibleArea().then(renderAll).catch(handleError);
-    }
-  }
-
-  async function loadBoundaryInBackground(){
-    if(state.boundaryLoadPromise)return state.boundaryLoadPromise;
-    state.boundaryLoadPromise=(async()=>{
-      const boundaryQuery=`[out:json][timeout:45];
-(
- relation["boundary"="administrative"]["admin_level"="4"]["name"="Wien"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
- relation["boundary"="administrative"]["admin_level"="9"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
-);
-out body;>;out skel qt;`;
-      try{applyBoundaryData(processBoundaryGeoJSON(osmtogeojson(await fetchOverpass(boundaryQuery,'Vienna boundary/district query',20000))));}
-      catch(e){console.warn('Vienna boundary unavailable; fallback map extent remains usable.',e);}
-    })().finally(()=>{state.boundaryLoadPromise=null;});
-    return state.boundaryLoadPromise;
+    return [...groups.values()].map(g=>turf.point([g.lngSum/g.count,g.latSum/g.count],{
+      stationName:g.name,stationId:g.ids[0],transitModes:[...g.modes],railway:g.modes.has('subway')&&!g.modes.has('rail')?'subway':'rail'
+    })).sort((a,b)=>a.properties.stationName.localeCompare(b.properties.stationName,'de'));
   }
 
   async function ensureMapData(force=false) {
@@ -207,21 +206,38 @@ out body;>;out skel qt;`;
     if (!force && Date.now()-ts<ttl) {
       try {
         const cached=JSON.parse(localStorage.getItem(CACHE_KEY));
-        if(cached?.city&&cached?.stations?.length){state.mapData=cached;state.mapData.districts=Array.isArray(cached.districts)?cached.districts:[];state.mapData.railLines=state.mapData.railLines||[];if(!cached.boundaryLoaded)loadBoundaryInBackground();loadRailLinesInBackground(false);return state.mapData;}
+        if(cached?.city&&cached?.districts?.length&&cached?.stations?.length){state.mapData=cached;state.mapData.railLines=state.mapData.railLines||[];loadRailLinesInBackground(false);return state.mapData;}
       } catch(_){}
     }
 
+    toast('Loading Vienna boundary…',3500);
+    const boundaryQuery=`[out:json][timeout:45];
+area(${VIENNA_AREA_ID})->.vienna;
+(
+ relation(${VIENNA_RELATION_ID});
+ relation(area.vienna)["boundary"="administrative"]["admin_level"="9"];
+);
+out geom;`;
+    const boundaryOsm=await fetchOverpass(boundaryQuery,'Vienna boundary/district query',50000);
+    const boundary=processBoundaryGeoJSON(osmtogeojson(boundaryOsm));
+
     toast('Loading Vienna rail and U-Bahn stations…',4000);
-    const stationQuery=`[out:json][timeout:25];
-nwr["railway"~"^(station|halt)$"]["access"!="private"](${VIENNA_BBOX.south},${VIENNA_BBOX.west},${VIENNA_BBOX.north},${VIENNA_BBOX.east});
+    const stationQuery=`[out:json][timeout:45];
+area(${VIENNA_AREA_ID})->.vienna;
+(
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["station"="subway"]["access"!="private"];
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["subway"="yes"]["access"!="private"];
+  nwr(area.vienna)["railway"~"^(station|halt)$"]["train"="yes"]["tram"!="yes"]["access"!="private"];
+  nwr(area.vienna)["public_transport"="station"]["train"="yes"]["tram"!="yes"]["access"!="private"];
+);
 out center tags;`;
-    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',20000);
-    const stations=parseStationElements(stationOsm,fallbackViennaCity());
+    const stationOsm=await fetchOverpass(stationQuery,'Vienna station query',40000);
+    const stations=parseStationElements(stationOsm,boundary.city);
     if(!stations.length)throw new Error('No Vienna stations were returned by Overpass.');
 
-    state.mapData={city:fallbackViennaCity(),districts:[],stations,railLines:[],boundaryLoaded:false};
-    saveMapData();
-    loadBoundaryInBackground();
+    state.mapData={city:boundary.city,districts:boundary.districts,stations,railLines:[]};
+    localStorage.setItem(CACHE_KEY,JSON.stringify(state.mapData));
+    localStorage.setItem(CACHE_TS_KEY,String(Date.now()));
     loadRailLinesInBackground(force);
     return state.mapData;
   }
@@ -236,9 +252,9 @@ out center tags;`;
         try{const cached=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY));if(Array.isArray(cached)&&cached.length){state.mapData.railLines=cached;refreshRailLayers();return;}}catch(_){}
       }
       const query=`[out:json][timeout:60];
-area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;
+area(${VIENNA_AREA_ID})->.vienna;
 (
- way(area.vienna)["railway"~"^(subway|light_rail)$"];
+ way(area.vienna)["railway"="subway"];
  way(area.vienna)["railway"="rail"]["service"!="yard"]["service"!="siding"]["service"!="spur"];
 );
 out geom tags;`;
@@ -258,15 +274,15 @@ out geom tags;`;
     [['create-',state.createMap],['game-',state.gameMap]].forEach(([prefix,map])=>{
       if(!map||!state.mapData)return;
       state.mapLayers[prefix+'rails']?.remove();
-      state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(state.mapData.railLines||[]),{style:mapGeoStyle('rail')}).addTo(map);
+      state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(state.mapData.railLines||[]),{style:f=>mapGeoStyle('rail',f),interactive:false}).addTo(map);
       state.mapLayers[prefix+'stations']?.bringToFront?.();
     });
   }
 
   function processOsmGeoJSON(geo) {
     const features=geo.features||[];
-    const city=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='4'&&t.name==='Wien'&&isPolygon(f);}).sort((a,b)=>safeArea(b)-safeArea(a))[0];
-    if(!city)throw new Error('Could not identify the Vienna boundary.');
+    const city=features.find(f=>String(f.id||f.properties?.id||'').includes(String(VIENNA_RELATION_ID))&&isPolygon(f))||features.filter(isPolygon).sort((a,b)=>safeArea(b)-safeArea(a))[0];
+    if(!city)throw new Error(`Vienna boundary relation ${VIENNA_RELATION_ID} has no usable polygon geometry.`);
     const districts=features.filter(f=>{const t=f.properties?.tags||{};return t.boundary==='administrative'&&t.admin_level==='9'&&isPolygon(f);}).map(f=>({feature:f,number:districtNumber(f.properties?.tags||{}),name:(f.properties?.tags||{}).name||'District'})).filter(d=>d.number>=1&&d.number<=23);
     const stations=features.filter(f=>['station','halt'].includes(f.properties?.tags?.railway)).map((f,i)=>{
       const p=f.geometry?.type==='Point'?JSON.parse(JSON.stringify(f)):turf.centroid(f); const tags=f.properties?.tags||{};
@@ -281,24 +297,35 @@ out geom tags;`;
   function districtNumber(tags){ const g=tags['ref:at:gkz']; if(/^9\d{2}$/.test(g||''))return Number(g.slice(1)); const m=String(tags.ref||tags.name||'').match(/(?:^|\D)(\d{1,2})(?:\D|$)/); return m?Number(m[1]):null; }
   function pointDistrict(point){ if(!point)return null; return state.mapData.districts.find(d=>{try{return turf.booleanPointInPolygon(point,d.feature);}catch(_){return false;}})||null; }
 
-  function mapGeoStyle(kind){
-    if(kind==='city')return {color:'#374151',weight:2,fillOpacity:0};
-    if(kind==='district')return {color:'#6b7280',weight:1,dashArray:'4 5',fillOpacity:0};
-    if(kind==='rail')return {color:'#111827',weight:2.5,opacity:.65};
+  function mapGeoStyle(kind,feature=null){
+    if(kind==='city')return {color:'#9ca3af',weight:1.5,fillOpacity:0};
+    if(kind==='district')return {color:'#cbd5e1',weight:.8,dashArray:'4 6',fillOpacity:0,opacity:.65};
+    if(kind==='rail'){
+      const railway=feature?.properties?.tags?.railway||feature?.properties?.railway;
+      if(railway==='subway')return {color:'#2563eb',weight:5.5,opacity:.92,lineCap:'round',lineJoin:'round'};
+      return {color:'#111827',weight:4.2,opacity:.78,lineCap:'round',lineJoin:'round'};
+    }
     if(kind==='possible')return {color:'#2563eb',weight:2,fillColor:'#3b82f6',fillOpacity:.16};
     if(kind==='excluded')return {color:'#4b5563',weight:0,fillColor:'#4b5563',fillOpacity:.46};
     return {};
   }
 
+  function stationIconClass(feature){
+    const modes=feature?.properties?.transitModes||[];
+    if(modes.includes('subway')&&modes.includes('rail'))return 'station-dot station-interchange';
+    if(modes.includes('subway'))return 'station-dot station-subway';
+    return 'station-dot station-rail';
+  }
+
   function drawReferenceLayers(map,prefix,onStationClick=null){
     const md=state.mapData;
     ['city','districts','rails','stations'].forEach(k=>state.mapLayers[prefix+k]?.remove());
-    state.mapLayers[prefix+'city']=L.geoJSON(md.city,{style:mapGeoStyle('city')}).addTo(map);
-    state.mapLayers[prefix+'districts']=L.geoJSON(turf.featureCollection(md.districts.map(d=>d.feature)),{style:mapGeoStyle('district')}).addTo(map);
-    state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(md.railLines),{style:mapGeoStyle('rail')}).addTo(map);
+    state.mapLayers[prefix+'city']=L.geoJSON(md.city,{style:mapGeoStyle('city'),interactive:false}).addTo(map);
+    if(prefix!=='create-')state.mapLayers[prefix+'districts']=L.geoJSON(turf.featureCollection(md.districts.map(d=>d.feature)),{style:mapGeoStyle('district'),interactive:false}).addTo(map);
+    state.mapLayers[prefix+'rails']=L.geoJSON(turf.featureCollection(md.railLines),{style:f=>mapGeoStyle('rail',f),interactive:false}).addTo(map);
     state.mapLayers[prefix+'stations']=L.geoJSON(turf.featureCollection(md.stations),{
-      pointToLayer:(f,ll)=>L.marker(ll,{icon:L.divIcon({className:'station-dot',iconSize:[10,10]})}),
-      onEachFeature:(f,layer)=>{ layer.bindTooltip(f.properties?.stationName||'Station',{direction:'top'}); if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);}); }
+      pointToLayer:(f,ll)=>L.marker(ll,{icon:L.divIcon({className:stationIconClass(f),iconSize:[18,18]})}),
+      onEachFeature:(f,layer)=>{ layer.bindTooltip(f.properties?.stationName||'Station',{direction:'top',offset:[0,-7]}); if(onStationClick)layer.on('click',e=>{L.DomEvent.stopPropagation(e);onStationClick(f);}); }
     }).addTo(map);
   }
 
@@ -313,41 +340,38 @@ out geom tags;`;
 
   function selectedStationPoint(){ return state.createStation ? turf.point(state.createStation.geometry.coordinates) : null; }
   function distanceM(a,b){ return turf.distance(a,b,{units:'meters'}); }
-  function hidingSpotValid(){ return !!(state.createPoint&&state.createStation&&distanceM(state.createPoint,selectedStationPoint())<=BASE_HIDE_RADIUS_M+0.5); }
+
+  function populateCreateStationSelect(){
+    const sel=$('createStationSelect');if(!sel||!state.mapData)return;
+    sel.innerHTML='<option value="">Choose a station…</option>'+state.mapData.stations.map(st=>`<option value="${escapeHtml(st.properties.stationId)}">${escapeHtml(st.properties.stationName)}</option>`).join('');
+    if(state.createStation)sel.value=state.createStation.properties.stationId;
+  }
 
   async function setupCreateMap(){
-    if(!state.createMap){ state.createMap=L.map('createMap',baseMapOptions()); addBaseTiles(state.createMap); state.createMap.on('click',e=>{if(!state.createPickMode)return;state.createPickMode=false;setCreatePoint(e.latlng.lat,e.latlng.lng,null,'map');}); }
-    $('createStationStatus').className='status-box';$('createStationStatus').textContent='Loading Vienna stations… the base map is already usable.';
+    if(!state.createMap){ state.createMap=L.map('createMap',baseMapOptions()); addBaseTiles(state.createMap); }
+    $('createStationStatus').className='status-box';$('createStationStatus').textContent='Loading U-Bahn and passenger-rail stations…';
     await ensureMapData();
     drawReferenceLayers(state.createMap,'create-',f=>selectCreateStation(f));
+    populateCreateStationSelect();
     state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8]});
-    if(!state.createStation){$('createStationStatus').className='status-box good';$('createStationStatus').textContent='Stations loaded. Tap a rail/U-Bahn station marker.';}
+    if(!state.createStation){$('createStationStatus').className='status-box good';$('createStationStatus').textContent='Choose a station from the list or tap a station marker on the map.';}
     renderCreateSelection();
   }
 
   function selectCreateStation(feature){
     state.createStation=feature;
     const [lng,lat]=feature.geometry.coordinates; $('createStationStatus').className='status-box good'; $('createStationStatus').textContent=`Selected: ${feature.properties.stationName} · ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
-    renderCreateSelection(); if(state.createPoint)setCreatePoint(state.createPoint.geometry.coordinates[1],state.createPoint.geometry.coordinates[0],state.createAccuracyM,state.createAccuracyM?'gps':'map');
+    if($('createStationSelect'))$('createStationSelect').value=feature.properties.stationId;
+    renderCreateSelection();
   }
 
   function renderCreateSelection(){
     state.mapLayers.createStationRing?.remove(); state.mapLayers.createSelectedStation?.remove();
     if(!state.createStation)return;
     const [lng,lat]=state.createStation.geometry.coordinates;
-    state.mapLayers.createStationRing=L.circle([lat,lng],{radius:BASE_HIDE_RADIUS_M,color:'#7c3aed',weight:2,fillColor:'#7c3aed',fillOpacity:.08}).addTo(state.createMap);
-    state.mapLayers.createSelectedStation=L.marker([lat,lng],{icon:L.divIcon({className:'station-selected',iconSize:[14,14]})}).addTo(state.createMap).bindTooltip(state.createStation.properties.stationName);
-  }
-
-  function setCreatePoint(lat,lng,accuracyM=null,source='map'){
-    const point=turf.point([lng,lat]); state.createPoint=point; state.createAccuracyM=Number.isFinite(Number(accuracyM))?Number(accuracyM):null;
-    state.mapLayers.createSpot?.remove(); state.mapLayers.createAccuracy?.remove();
-    state.mapLayers.createSpot=L.marker([lat,lng],{draggable:true}).addTo(state.createMap); state.mapLayers.createSpot.on('dragend',e=>{const p=e.target.getLatLng();setCreatePoint(p.lat,p.lng,null,'map');});
-    if(state.createAccuracyM)state.mapLayers.createAccuracy=L.circle([lat,lng],{radius:state.createAccuracyM,className:'accuracy-circle',fillOpacity:.07,weight:1}).addTo(state.createMap);
-    const el=$('createLocationStatus');
-    if(!state.createStation){el.className='status-box bad';el.textContent='Choose the hiding station first.';return;}
-    const d=distanceM(point,selectedStationPoint()); const ok=d<=BASE_HIDE_RADIUS_M+0.5; const acc=state.createAccuracyM?` · GPS ±${Math.round(state.createAccuracyM)} m`:' · manual map point';
-    el.className=`status-box ${ok?(state.createAccuracyM>100?'warn':'good'):'bad'}`; el.textContent=ok?`Valid actual hiding spot · ${Math.round(d)} m from ${state.createStation.properties.stationName}${acc}`:`Invalid: ${Math.round(d)} m from station; maximum is ${BASE_HIDE_RADIUS_M} m.`;
+    state.mapLayers.createStationRing=L.circle([lat,lng],{radius:BASE_HIDE_RADIUS_M,color:'#7c3aed',weight:2.5,fillColor:'#7c3aed',fillOpacity:.08}).addTo(state.createMap);
+    state.mapLayers.createSelectedStation=L.marker([lat,lng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.createMap).bindTooltip(state.createStation.properties.stationName);
+    state.createMap.panTo([lat,lng]);
   }
 
   function getGps(){
@@ -363,16 +387,24 @@ out geom tags;`;
 
   async function createGame(){
     initSupabaseIfNeeded(); const name=$('createGameName').value.trim(),password=$('createPassword').value;
-    if(!name)return toast('Enter a game name.'); if(password.length<4)return toast('Use a password of at least 4 characters.'); if(!state.createStation)return toast('Choose the hiding station.'); if(!state.createPoint)return toast('Choose the actual hiding spot.'); if(!hidingSpotValid())return toast('The actual hiding spot must be within 250 m of the selected station.');
-    const [slng,slat]=state.createStation.geometry.coordinates,[hlng,hlat]=state.createPoint.geometry.coordinates;
-    const ok=await confirmAction('Create this game?',`Game: ${name}\nLong-game target: ${state.createStation.properties.stationName}\nActual hiding spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)}\nDistance from station: ${Math.round(distanceM(state.createPoint,selectedStationPoint()))} m\n\nBoth target coordinates are protected from seekers.`,'Create game'); if(!ok)return;
-    const {data,error}=await state.supabase.rpc('create_game_v3',{p_name:name,p_password:password,p_station_name:state.createStation.properties.stationName,p_station_lat:slat,p_station_lng:slng,p_hidden_lat:hlat,p_hidden_lng:hlng}); if(error)throw error; await enterHider(data,password);
+    if(!name)return toast('Enter a game name.'); if(password.length<4)return toast('Use a password of at least 4 characters.'); if(!state.createStation)return toast('Choose the hiding station.');
+    const [slng,slat]=state.createStation.geometry.coordinates;
+    const ok=await confirmAction('Create this game?',`Game: ${name}
+Secret station target: ${state.createStation.properties.stationName}
+
+You do NOT choose the final hiding spot yet. Until you privately start Endgame, every answer is calculated against this station coordinate.`,'Create game'); if(!ok)return;
+    const {data,error}=await state.supabase.rpc('create_game_v4',{p_name:name,p_password:password,p_station_name:state.createStation.properties.stationName,p_station_lat:slat,p_station_lng:slng}); if(error)throw error; await enterHider(data,password);
+  }
+
+  function secretFromRow(r){
+    const hidden=Number.isFinite(Number(r.hidden_lat))&&Number.isFinite(Number(r.hidden_lng))?turf.point([Number(r.hidden_lng),Number(r.hidden_lat)]):null;
+    return {hidden,station:turf.point([Number(r.station_lng),Number(r.station_lat)]),station_name:r.station_name,endgame:!!r.endgame,base_radius_m:r.base_radius_m||BASE_HIDE_RADIUS_M};
   }
 
   async function enterHider(gameId,password){
     initSupabaseIfNeeded(); if(!gameId)return toast('Choose a game.');
-    const {data,error}=await state.supabase.rpc('get_hider_game_v3',{p_game_id:gameId,p_password:password}); if(error)throw error; const r=data?.[0]; if(!r)return toast('Wrong hider password.');
-    state.role='hider'; state.hiderPassword=password; state.game={id:r.game_id,name:r.game_name,status:r.game_status}; state.secret={hidden:turf.point([r.hidden_lng,r.hidden_lat]),station:turf.point([r.station_lng,r.station_lat]),station_name:r.station_name,endgame:r.endgame,base_radius_m:r.base_radius_m||BASE_HIDE_RADIUS_M}; await enterGameCommon();
+    const {data,error}=await state.supabase.rpc('get_hider_game_v4',{p_game_id:gameId,p_password:password}); if(error)throw error; const r=data?.[0]; if(!r)return toast('Wrong hider password.');
+    state.role='hider'; state.hiderPassword=password; state.game={id:r.game_id,name:r.game_name,status:r.game_status}; state.secret=secretFromRow(r); await enterGameCommon();
   }
   async function enterSeeker(gameId){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status').eq('id',gameId).single(); if(error)throw error; state.role='seeker';state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon(); }
 
@@ -389,6 +421,7 @@ out geom tags;`;
   }
 
   function handleGameMapClick(latlng){
+    if(state.role==='hider'&&state.endgamePickMode){state.endgamePickMode=false;setEndgameCandidate(latlng.lat,latlng.lng,null,'map');return;}
     if(state.role!=='seeker')return;
     if(state.pickMode==='question'&&state.pendingQuestionCard){ const card=state.pendingQuestionCard; state.pickMode=null;state.pendingQuestionCard=null; prepareAndAskQuestion(card,{lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'}).catch(handleError); return; }
     if(state.pickMode==='thermo'){ state.pickMode=null; submitThermoReference({lat:latlng.lat,lng:latlng.lng,accuracy_m:null,source:'map'}).catch(handleError); }
@@ -438,7 +471,7 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
     const key=POI_CACHE_PREFIX+type, cached=localStorage.getItem(key);
     if(cached){try{const obj=JSON.parse(cached);if(Date.now()-obj.ts<24*3600e3&&Array.isArray(obj.pois)){state.poiCache[type]=obj.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];}}catch(_){}}
     const filter=POI_QUERIES[type]; if(!filter)throw new Error(`No Overpass filter for ${type}.`);
-    const query=`[out:json][timeout:45];area["boundary"="administrative"]["admin_level"="4"]["name"="Wien"]->.vienna;nwr(area.vienna)${filter};out center tags;`;
+    const query=`[out:json][timeout:45];area(${VIENNA_AREA_ID})->.vienna;nwr(area.vienna)${filter};out center tags;`;
     const osm=await fetchOverpass(query,`${humanize(type)} Tentacle query`,40000); const raw=(osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
     localStorage.setItem(key,JSON.stringify({ts:Date.now(),pois:raw})); state.poiCache[type]=raw.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];
   }
@@ -468,7 +501,7 @@ ${pois.length} mapped ${card.title.toLowerCase()} inside the remaining playable 
   function activeVetoForQuestion(id){return effectiveActions('question_veto').find(a=>a.parent_id===id)||null;}
   function latestAction(kind){return effectiveActions(kind).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at))[0]||null;}
 
-  function hiderTargetPoint(){if(state.role!=='hider'||!state.secret)return null;return state.secret.endgame?state.secret.hidden:state.secret.station;}
+  function hiderTargetPoint(){if(state.role!=='hider'||!state.secret)return null;return state.secret.endgame?(state.secret.hidden||state.secret.station):state.secret.station;}
   function suggestedAnswer(q){
     const target=hiderTargetPoint(); if(!target)return null; const p=q.payload||{};
     if(p.question_kind==='radar'){const d=turf.distance(target,turf.point([p.center.lng,p.center.lat]),{units:'meters'});return {type:'boolean',value:d<=Number(p.radius_m),text:d<=Number(p.radius_m)?`HIT — target is ${Math.round(d)} m away.`:`MISS — target is ${Math.round(d)} m away.`};}
@@ -546,11 +579,47 @@ This does not consume a Veto card and awards no card draw. Seekers will only be 
     const {error}=await state.supabase.rpc('set_time_trap_trigger_v3',{p_game_id:state.game.id,p_trap_id:trap.id,p_password:state.hiderPassword,p_active:active});if(error)throw error;await reloadGameState();
   }
 
-  async function toggleEndgame(){
-    if(state.role!=='hider')return;const next=!state.secret.endgame;const ok=await confirmAction(next?'Switch privately to endgame?':'Return privately to station phase?',next?`From the next question onward, automatic answer previews use your exact hiding coordinate instead of ${state.secret.station_name}.\n\nSeekers receive no phase flag or notification.`:`Automatic answer previews will again use ${state.secret.station_name}.\n\nSeekers receive no phase flag or notification.`,next?'Enter endgame':'Undo endgame',!next);if(!ok)return;
-    const {error}=await state.supabase.rpc('set_endgame_v3',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:next});if(error)throw error;await refreshHiderSecret();await reloadGameState();
+  function currentEndgameRadius(){return BASE_HIDE_RADIUS_M*Math.sqrt(currentAreaMultiplier());}
+
+  function setEndgameCandidate(lat,lng,accuracyM=null,source='map'){
+    if(state.role!=='hider'||!state.secret)return;
+    const point=turf.point([lng,lat]);const d=distanceM(point,state.secret.station);const limit=currentEndgameRadius();
+    state.endgameCandidate=point;state.endgameAccuracyM=Number.isFinite(Number(accuracyM))?Number(accuracyM):null;
+    state.mapLayers.endgameCandidate?.remove();state.mapLayers.endgameCandidateAccuracy?.remove();
+    state.mapLayers.endgameCandidate=L.marker([lat,lng],{draggable:true}).addTo(state.gameMap).bindTooltip('Private proposed hiding spot');
+    state.mapLayers.endgameCandidate.on('dragend',e=>{const p=e.target.getLatLng();setEndgameCandidate(p.lat,p.lng,null,'map');});
+    if(state.endgameAccuracyM)state.mapLayers.endgameCandidateAccuracy=L.circle([lat,lng],{radius:state.endgameAccuracyM,className:'accuracy-circle',fillOpacity:.05,weight:1}).addTo(state.gameMap);
+    const ok=d<=limit+0.5;const acc=state.endgameAccuracyM?` · GPS ±${Math.round(state.endgameAccuracyM)} m`:' · manual map point';
+    $('endgameLocationStatus').className=`status-box ${ok?(state.endgameAccuracyM>100?'warn':'good'):'bad'}`;
+    $('endgameLocationStatus').textContent=ok?`Proposed hiding spot: ${Math.round(d)} m from ${state.secret.station_name}${acc}`:`Outside the current hiding zone: ${Math.round(d)} m from station; maximum ${Math.round(limit)} m.`;
+    renderHiderSecret();
   }
-  async function refreshHiderSecret(){if(state.role!=='hider')return;const {data,error}=await state.supabase.rpc('get_hider_game_v3',{p_game_id:state.game.id,p_password:state.hiderPassword});if(error)throw error;const r=data?.[0];if(r)state.secret={hidden:turf.point([r.hidden_lng,r.hidden_lat]),station:turf.point([r.station_lng,r.station_lat]),station_name:r.station_name,endgame:r.endgame,base_radius_m:r.base_radius_m||BASE_HIDE_RADIUS_M};}
+
+  function clearEndgameCandidate(){
+    state.endgameCandidate=null;state.endgameAccuracyM=null;state.endgamePickMode=false;
+    state.mapLayers.endgameCandidate?.remove();state.mapLayers.endgameCandidateAccuracy?.remove();state.mapLayers.endgameCandidate=null;state.mapLayers.endgameCandidateAccuracy=null;
+    if($('endgameLocationStatus')){$('endgameLocationStatus').className='status-box';$('endgameLocationStatus').textContent='No final hiding spot selected yet.';}
+  }
+
+  async function toggleEndgame(){
+    if(state.role!=='hider')return;
+    if(state.secret.endgame){
+      const ok=await confirmAction('Return privately to station phase?',`Automatic answer previews will again use ${state.secret.station_name}.
+
+Seekers receive no phase flag or notification. The stored hiding spot remains private so you can re-enter Endgame later.`,'Undo endgame',true);if(!ok)return;
+      const {error}=await state.supabase.rpc('set_endgame_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:false,p_hidden_lat:null,p_hidden_lng:null});if(error)throw error;await refreshHiderSecret();await reloadGameState();return;
+    }
+    if(!state.endgameCandidate)return toast('Choose your actual hiding location first, using GPS or a map tap.');
+    const d=distanceM(state.endgameCandidate,state.secret.station),limit=currentEndgameRadius();if(d>limit+0.5)return toast(`The hiding spot must be within ${Math.round(limit)} m of the station.`);
+    const [lng,lat]=state.endgameCandidate.geometry.coordinates;
+    const ok=await confirmAction('Start Endgame privately?',`Actual hiding spot: ${lat.toFixed(5)}, ${lng.toFixed(5)}
+Distance from ${state.secret.station_name}: ${Math.round(d)} m
+Allowed radius: ${Math.round(limit)} m
+
+From the next question onward, automatic answer previews use this actual location. Seekers receive no phase flag or notification.`,'Enter endgame');if(!ok)return;
+    const {error}=await state.supabase.rpc('set_endgame_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:true,p_hidden_lat:lat,p_hidden_lng:lng});if(error)throw error;clearEndgameCandidate();await refreshHiderSecret();await reloadGameState();
+  }
+  async function refreshHiderSecret(){if(state.role!=='hider')return;const {data,error}=await state.supabase.rpc('get_hider_game_v4',{p_game_id:state.game.id,p_password:state.hiderPassword});if(error)throw error;const r=data?.[0];if(r)state.secret=secretFromRow(r);}
 
   async function setActionActive(action,active){const verb=active?'Redo':'Undo';const ok=await confirmAction(`${verb} this action?`,`${actionLabel(action)}\n\n${active?'It becomes active again.':'It remains in history but stops affecting the game.'}`,verb,!active);if(!ok)return;const {error}=await state.supabase.rpc('set_action_active_v3',{p_game_id:state.game.id,p_action_id:action.id,p_password:state.role==='hider'?state.hiderPassword:null,p_active:active});if(error)throw error;await reloadGameState();}
 
@@ -600,13 +669,16 @@ This does not consume a Veto card and awards no card draw. Seekers will only be 
   }
 
   function renderHiderSecret(){
-    if(state.role!=='hider'||!state.secret)return;const [slng,slat]=state.secret.station.geometry.coordinates,[hlng,hlat]=state.secret.hidden.geometry.coordinates;const phase=state.secret.endgame?'<span class="phase-endgame">ENDGAME / actual spot</span>':'<span class="phase-station">STATION PHASE</span>';
-    $('hiderSecretStatus').innerHTML=`${phase}<br><strong>${escapeHtml(state.secret.station_name)}</strong> · ${slat.toFixed(5)}, ${slng.toFixed(5)}<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;
-    $('toggleEndgameButton').textContent=state.secret.endgame?'Undo endgame: use station again':'Switch privately to endgame';
+    if(state.role!=='hider'||!state.secret)return;
+    const [slng,slat]=state.secret.station.geometry.coordinates;const phase=state.secret.endgame?'<span class="phase-endgame">ENDGAME / actual spot</span>':'<span class="phase-station">STATION PHASE</span>';
+    const hiddenText=state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'<br>Actual spot: <em>not chosen yet</em> — choose it only when you are ready to start Endgame.';
+    $('hiderSecretStatus').innerHTML=`${phase}<br><strong>${escapeHtml(state.secret.station_name)}</strong> · ${slat.toFixed(5)}, ${slng.toFixed(5)}${hiddenText}`;
+    $('toggleEndgameButton').textContent=state.secret.endgame?'Undo endgame: use station again':'Start private endgame with selected spot';
+    $('endgameLocationControls')?.classList.toggle('hidden',state.secret.endgame);
     state.mapLayers.hiderStation?.remove();state.mapLayers.hiderSpot?.remove();state.mapLayers.hiderZone?.remove();
-    state.mapLayers.hiderStation=L.marker([slat,slng],{icon:L.divIcon({className:'station-selected',iconSize:[14,14]})}).addTo(state.gameMap).bindTooltip(`Private station: ${state.secret.station_name}`);
-    state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Private actual hiding spot');
-    const r=BASE_HIDE_RADIUS_M*Math.sqrt(currentAreaMultiplier());state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#7c3aed',weight:2,dashArray:'5 4',fillOpacity:.04}).addTo(state.gameMap);
+    state.mapLayers.hiderStation=L.marker([slat,slng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.gameMap).bindTooltip(`Private station: ${state.secret.station_name}`);
+    if(state.secret.hidden){const [hlng,hlat]=state.secret.hidden.geometry.coordinates;state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Private actual hiding spot');}
+    const r=currentEndgameRadius();state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#7c3aed',weight:2,dashArray:'5 4',fillOpacity:.04}).addTo(state.gameMap);
   }
 
   function renderQuestionDeck(){
@@ -680,16 +752,16 @@ This does not consume a Veto card and awards no card draw. Seekers will only be 
     if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';state.realtimeChannel=state.supabase.channel(`actions-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
   }
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null});clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false});clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
     document.querySelector('[data-action="open-hider"]').addEventListener('click',()=>openLobby('hider'));document.querySelector('[data-action="open-seeker"]').addEventListener('click',()=>openLobby('seeker'));document.querySelector('[data-action="home"]').addEventListener('click',()=>showView('homeView'));document.querySelector('[data-action="leave-game"]').addEventListener('click',leaveGame);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
-    $('createGpsButton').addEventListener('click',()=>getGps().then(p=>setCreatePoint(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('createPickButton').addEventListener('click',()=>{state.createPickMode=true;toast('Tap the map to set the actual hiding spot.');});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
+    $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
     document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Fresh GPS for each question':'Tap map after choosing question';}));
-    $('setThermoGpsButton').addEventListener('click',()=>getGps().then(p=>submitThermoReference({...p,source:'gps'})).catch(handleError));$('setThermoMapButton').addEventListener('click',()=>{state.pickMode='thermo';toast('Tap the map to set Thermometer point A.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));
+    $('setThermoGpsButton').addEventListener('click',()=>getGps().then(p=>submitThermoReference({...p,source:'gps'})).catch(handleError));$('setThermoMapButton').addEventListener('click',()=>{state.pickMode='thermo';toast('Tap the map to set Thermometer point A.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));
   }
 
   bindUi();
