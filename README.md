@@ -1,100 +1,68 @@
-# Vienna Hide & Seek v3.2.1
+# Vienna Hide & Seek v3.3.0
 
-Frontend-only hotfix/update from v3.2.0. **No new Supabase SQL migration is required.**
+This release removes normal gameplay's dependency on live Overpass requests once reference data has been seeded.
 
-## Important Supabase configuration
-Use the Project API URL (`https://PROJECTREF.supabase.co`) and an `sb_publishable_...` key. Never commit an `sb_secret_...` or `service_role` key.
+## Architecture
 
-## v3.2.1 changes
-- validates the Supabase URL/key and rejects Dashboard URLs or secret keys with a clear error;
-- uses OpenFreeMap Positron vector tiles through MapLibre/Leaflet and hides all symbol/label layers for a clean no-label basemap;
-- loads actual U-Bahn route relations (U-lines) and S-Bahn route relations, plus subdued physical ÖBB/passenger rail track geometry;
-- stronger transit line styling;
-- Endgame location controls are hidden during the station phase. The hider only reveals them by pressing “Seekers reached my station — prepare Endgame”;
-- game creation still asks only for the secret station.
+- GitHub Pages: frontend
+- Supabase: games, secrets, actions, cards, admin functions **and shared Vienna reference datasets**
+- Stadt Wien OGD: authoritative Vienna district geometry when the developer refreshes it
+- OpenStreetMap / Overpass: station, transit-network and Tentacle POI source **only during developer refresh/fallback**
 
-This version is a frontend + small database migration update over v3.1.x.
+## Upgrade from v3.2.x
 
-## Main changes
+1. In Supabase SQL Editor run `supabase-v3.3.0-migration.sql` once.
+2. Set a strong developer password directly in Supabase SQL Editor (do NOT save the real password in GitHub):
 
-### Transit map cleanup
-- Selectable hiding stations are now limited to **Vienna U-Bahn/subway and passenger railway stations**.
-- Tram/light-rail tracks are no longer requested for the overlay.
-- Same-named OSM station elements are collapsed into **one station marker** instead of one marker per platform/OSM object.
-- The Hider can choose the station either from a dropdown or by tapping the map.
-- U-Bahn lines are drawn thicker in blue; ordinary railway/S-Bahn/ÖBB infrastructure is drawn thicker in dark grey/black.
-- Station markers are larger and easier to tap.
-- The creation map omits district boundaries and uses a pale no-label basemap first, with standard OSM fallbacks.
-- Leaflet uses Canvas rendering for better responsiveness with the rail geometry.
+```sql
+update public.app_admin
+set password_hash=extensions.crypt('YOUR-STRONG-DEVELOPER-PASSWORD',extensions.gen_salt('bf',10))
+where id=1;
+```
 
-### Corrected station-first / Endgame flow
-Game creation now stores only:
-1. game name/password;
-2. secret hiding station.
+3. Keep your existing `config.js` with the correct project URL and `sb_publishable_...` key.
+4. Replace frontend files (`app.js`, `index.html`, `styles.css`) and optionally README/migration files.
+5. Commit and push in GitHub Desktop.
+6. Open the game and use the small **Developer** button on the home page.
 
-The Hider **does not choose the final hiding coordinate at game creation**.
+## Seed the shared Vienna cache
 
-During Station Phase, all automatic Hider answer previews use the secret station coordinate.
+After logging into Developer:
 
-Only when the Hider decides that the Seekers have actually reached the correct station does the Hider:
-1. choose the real hiding location using phone GPS or by tapping the game map;
-2. confirm **Start Endgame**.
+- **Import this browser's existing cache**: quickest option if this browser already successfully loaded stations/transit in v3.2.x.
+- **Refresh districts + stations + network**: downloads the official Vienna districts plus OSM station/network data and saves them to Supabase.
+- **Refresh Tentacle POIs**: saves museums, parks, libraries, cinemas, hospitals, zoos, aquariums and amusement parks.
+- **Refresh everything**: does both.
 
-The backend verifies that this location is inside the current station hiding radius (normally 250 m; Prosperous Home expansion is respected). It then stores that coordinate privately and changes the private phase to Endgame. Seekers receive no Endgame flag or notification.
+Normal Hider/Seeker sessions then read these datasets from Supabase and do not need Overpass for startup.
 
-Undoing Endgame returns question targeting to the station; the stored hiding coordinate remains private and can be reused/changed before entering Endgame again.
+Refresh uses a SHA-256 content hash. If the newly downloaded dataset has the same hash, only its `checked_at` timestamp changes; otherwise the saved payload and `updated_at` are replaced.
 
-## IMPORTANT: existing v3.1.x Supabase project
-Run **`supabase-v3.2-migration.sql`** once in Supabase -> SQL Editor before uploading the v3.2 frontend.
+## Developer game management
 
-Do not create a new Supabase project.
+Developer mode lists all games and permits:
 
-The migration:
-- makes `game_secrets.hidden_lat` / `hidden_lng` nullable;
-- adds `create_game_v4`;
-- adds `get_hider_game_v4`;
-- adds `set_endgame_v4` with server-side hiding-radius validation.
+- renaming a game;
+- changing active/finished status;
+- permanently deleting a game and all cascading game data.
 
-`supabase.sql` is also updated as a complete rerunnable schema for a fresh install.
+The developer password is validated server-side and stored only as a bcrypt hash.
 
-## GitHub update
-Keep your existing configured `config.js` if you are updating manually.
+## Current-position controls
 
-Replace at least:
-- `app.js`
-- `index.html`
-- `styles.css`
-- `overpass-query.txt`
+Both Hider and Seeker now have a Current Position panel:
 
-Commit and push with GitHub Desktop. `index.html` loads `app.js?v=3.2.0`, so the browser should not reuse the old JS cache.
+- Use phone GPS
+- Set on map
+- Clear
+- drag the map marker after placing it
 
-## Basemap
-The app first requests CARTO's light/no-label raster basemap to get the minimal white map requested for gameplay. If that tile source cannot be loaded, it automatically falls back to standard OpenStreetMap tiles with a muted/grayscale CSS treatment.
+For Seekers, manual question mode uses this current-position marker. GPS question mode gets a fresh GPS reading when the question is chosen and updates the marker.
 
-The app supports an optional `CARTO_BASEMAP_KEY` in `config.js`, but it is not required by the game logic. Your existing Supabase values remain unchanged.
+For Hiders, the current-position marker stays local/private. During Endgame preparation it can be copied into the proposed final hiding spot.
 
-## Transit data / OSM
-Vienna uses fixed OSM identifiers:
-- relation `109166`
-- Overpass area `3600109166`
+## Vienna districts
 
-Station query categories:
-- `railway=station|halt` + `station=subway`
-- `railway=station|halt` + `subway=yes`
-- passenger train stations (`train=yes`), excluding tram-tagged stations
+Developer refresh prefers the City of Vienna official district GeoJSON service. The app accepts a district dataset only when it contains exactly district numbers 1 through 23.
 
-Line overlay:
-- `railway=subway`
-- `railway=rail` excluding yard/siding/spur service tracks
-
-No `railway=tram` or `railway=light_rail` ways are requested.
-## v3.2.2 changes
-
-- Station phase starts with the **entire Vienna city boundary** as the possible area. The app no longer unions 250 m buffers around every station at game load.
-- The 250 m (or Prosperous Home-adjusted) final zone is activated only when the Hider manually starts Endgame.
-- Starting Endgame creates an internal `endgame_zone` action containing only the already-known station centre and radius. It is not shown in the activity feed and never contains the private hiding coordinate.
-- Questions from the station phase are not reused as geometric constraints after Endgame starts, because they were answered relative to the station rather than the final hiding point.
-- The station-selection screen no longer draws a 250 m circle.
-- Removing the station-buffer union also makes the game map substantially faster to initialise.
-
-Existing v3.2.x projects: run `supabase-v3.2.2-migration.sql` once, then replace `app.js` and `index.html`.
+OSM `admin_level=9` remains a fallback because this is the documented OSM level for Vienna Gemeindebezirke.
