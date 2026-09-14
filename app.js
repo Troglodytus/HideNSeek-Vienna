@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.7.0';
+  const APP_VERSION = '3.8.0';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -32,15 +32,19 @@
   const VIENNA_TRANSIT_STOPS_LAYER='OEFFHALTESTOGD';
   const VIENNA_UBAHN_STOPS_LAYER='UBAHNHALTOGD';
   const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKANLAGEOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
+  const ACTIVE_POI_TYPES=['museum','park','library','cinema','hospital','cemetery','church','zoo'];
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
 
   const QUESTION_CARDS = [
     { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
     { slot:'same-line', category:'MIXED', title:'On This U-/S-Bahn Line?', detail:'Choose a line. Is the hiding station served by it?', kind:'same_line' },
     { slot:'street-shape', category:'MIXED', title:'Current Street Shape', detail:'Endgame only: receive a hand-drawn outline of the Hider’s nearest street.', kind:'street_shape', endgame_only:true },
-    { slot:'transdanubia', category:'MIXED', title:'Across the Danube?', detail:'Is the target in the 21st or 22nd district?', kind:'district_set', districts:[21,22], yes_label:'Yes', no_label:'No' },
+    { slot:'transdanubia', category:'MIXED', title:'In Mordor?', detail:'Is the target across the Danube in district 21 or 22?', kind:'district_set', districts:[21,22], yes_label:'Yes', no_label:'No' },
     { slot:'inner-districts', category:'MIXED', title:'Inner Districts?', detail:'Is the target in districts 1–9?', kind:'district_set', districts:[1,2,3,4,5,6,7,8,9], yes_label:'Yes', no_label:'No' },
     { slot:'stephansdom-benchmark', category:'MIXED', title:'Closer to Stephansdom?', detail:'Is the target closer to Stephansdom than you are?', kind:'landmark_compare', landmark_name:'Stephansdom', landmark:{lat:48.20849,lng:16.37208} },
+    { slot:'schoenbrunn-benchmark', category:'MIXED', title:'Closer to Schönbrunn?', detail:'Is the target closer to Schönbrunn Palace than you are?', kind:'landmark_compare', landmark_name:'Schönbrunn Palace', landmark:{lat:48.18452,lng:16.31217} },
+    { slot:'donauturm-benchmark', category:'MIXED', title:'Closer to Donauturm?', detail:'Is the target closer to Donauturm than you are?', kind:'landmark_compare', landmark_name:'Donauturm', landmark:{lat:48.24035,lng:16.41008} },
+    { slot:'riesenrad-benchmark', category:'MIXED', title:'Closer to the Riesenrad?', detail:'Is the target closer to the Wiener Riesenrad than you are?', kind:'landmark_compare', landmark_name:'Wiener Riesenrad', landmark:{lat:48.21667,lng:16.39588} },
     { slot:'north-of-me', category:'MIXED', title:'North of Me?', detail:'Is the target north of your position?', kind:'directional', axis:'lat', positive_label:'North', negative_label:'South' },
     { slot:'east-of-me', category:'MIXED', title:'East of Me?', detail:'Is the target east of your position?', kind:'directional', axis:'lng', positive_label:'East', negative_label:'West' },
     { slot:'radar-20000', category:'RADAR', title:'20 km Radar', detail:'Is the target within 20 km of this location?', kind:'radar', radius_m:20000 },
@@ -59,16 +63,13 @@
     { slot:'tentacle-hospitals', category:'TENTACLES', title:'Hospitals', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'hospital', endgame_only:true },
     { slot:'tentacle-cemeteries', category:'TENTACLES', title:'Cemeteries / Graveyards', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'cemetery', endgame_only:true },
     { slot:'tentacle-churches', category:'TENTACLES', title:'Churches', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'church', endgame_only:true },
-    { slot:'tentacle-zoos', category:'TENTACLES', title:'Zoos', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'zoo', endgame_only:true },
-    { slot:'tentacle-aquariums', category:'TENTACLES', title:'Aquariums', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'aquarium', endgame_only:true },
-    { slot:'tentacle-amusement', category:'TENTACLES', title:'Amusement Parks', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'amusement_park', endgame_only:true },
+    { slot:'tentacle-zoos', category:'TENTACLES', title:'Zoos / Aquariums', detail:'5 km Tentacle.', kind:'tentacle', poi_type:'zoo', endgame_only:true },
     { slot:'photo-water', category:'PHOTO', title:'Biggest body of water', detail:'Send a photo of the biggest body of water visible from the hiding area.', kind:'photo', photo_prompt:'Biggest body of water' },
     { slot:'photo-structure', category:'PHOTO', title:'Highest visible structure', detail:'Send a photo of the highest visible structure.', kind:'photo', photo_prompt:'Highest visible structure' },
     { slot:'photo-selfie', category:'PHOTO', title:'Selfie', detail:'Send a current selfie from the hiding location.', kind:'photo', photo_prompt:'Selfie' },
     { slot:'photo-four-houses', category:'PHOTO', title:'At least 4 houses in one image', detail:'One photo with at least four houses.', kind:'photo', photo_prompt:'At least 4 houses in one image' },
-    { slot:'photo-street-sign', category:'PHOTO', title:'Nearest street sign', detail:'Photograph the nearest street-name sign.', kind:'photo', photo_prompt:'Nearest street sign' },
-    { slot:'photo-up', category:'PHOTO', title:'View straight up', detail:'Photograph the view straight upward.', kind:'photo', photo_prompt:'View straight up' },
-    { slot:'photo-transit', category:'PHOTO', title:'Nearest transit sign', detail:'Photograph the nearest public-transport stop or station sign.', kind:'photo', photo_prompt:'Nearest public transport sign' }
+    { slot:'photo-lamp', category:'PHOTO', title:'Closest street light', detail:'Photograph the closest street light or lamp to the hiding spot.', kind:'photo', photo_prompt:'Closest street light / lamp' },
+    { slot:'photo-up', category:'PHOTO', title:'View straight up', detail:'Photograph the view straight upward.', kind:'photo', photo_prompt:'View straight up' }
   ];
 
   const POI_QUERIES = {
@@ -79,7 +80,7 @@
     hospital: '["amenity"="hospital"]',
     cemetery: ['["landuse"="cemetery"]','["amenity"="grave_yard"]'],
     church: '["amenity"="place_of_worship"]["religion"="christian"]',
-    zoo: '["tourism"="zoo"]',
+    zoo: ['["tourism"="zoo"]','["tourism"="aquarium"]'],
     aquarium: '["tourism"="aquarium"]',
     amusement_park: '["tourism"="theme_park"]'
   };
@@ -101,7 +102,7 @@
     gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
-    developerPassword:null,referenceMeta:{},sameLineSelection:null
+    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[]
   };
 
   const $ = id => document.getElementById(id);
@@ -848,16 +849,16 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
 
   async function loadPoiType(type){
     if(state.poiCache[type])return state.poiCache[type];
-    try{
-      const ref=await referenceDataset(REF_POI_PREFIX+type+'_v1');
-      if(Array.isArray(ref?.pois)){
-        state.poiCache[type]=ref.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));
-        return state.poiCache[type];
-      }
-    }catch(e){console.warn('POI reference lookup failed',type,e);}
-    const key=POI_CACHE_PREFIX+type,cached=localStorage.getItem(key);
-    if(cached){try{const obj=JSON.parse(cached);if(Array.isArray(obj.pois)){state.poiCache[type]=obj.pois.map(p=>turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type}));return state.poiCache[type];}}catch(_){}}
-    throw new Error(`${humanize(type)} reference data are not fully seeded in Supabase. Open Developer and refresh that category; gameplay no longer performs large live Overpass/WFS queries.`);
+    const sourceTypes=type==='zoo'?['zoo','aquarium']:[type];
+    const merged=[];const seen=new Set();
+    for(const sourceType of sourceTypes){
+      let pois=null;
+      try{const ref=await referenceDataset(REF_POI_PREFIX+sourceType+'_v1');if(Array.isArray(ref?.pois))pois=ref.pois;}catch(e){console.warn('POI reference lookup failed',sourceType,e);}
+      if(!pois){const cached=localStorage.getItem(POI_CACHE_PREFIX+sourceType);if(cached){try{const obj=JSON.parse(cached);if(Array.isArray(obj.pois))pois=obj.pois;}catch(_){}}}
+      for(const p of pois||[]){const key=String(p.id||`${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)},${p.name||''}`);if(seen.has(key))continue;seen.add(key);merged.push(turf.point([p.lng,p.lat],{poiId:p.id,poiName:p.name,poiType:type,sourcePoiType:sourceType}));}
+    }
+    if(merged.length){state.poiCache[type]=merged;return merged;}
+    throw new Error(`${humanize(type)} reference data are not fully seeded in Supabase. Open Developer and refresh that category.`);
   }
   function parsePoiElements(osm,type){
     return (osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
@@ -1006,11 +1007,11 @@ This does not consume a Veto card and awards no card draw. If the Hider is outsi
   }
   function streetShapeBlob(street){
     const canvas=document.createElement('canvas');canvas.width=600;canvas.height=600;const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,600,600);
-    const pts=street.coords.map(([lng,lat])=>mercator(lat,lng));const cx=pts.reduce((a,p)=>a+p.x,0)/pts.length,cy=pts.reduce((a,p)=>a+p.y,0)/pts.length;
-    let seed=Number(street.id||17)%9973;const rnd=()=>{seed=(seed*9301+49297)%233280;return seed/233280;};const ang=(.35+rnd()*2.45);const ca=Math.cos(ang),sa=Math.sin(ang);
-    const rot=pts.map(p=>{const x=p.x-cx,y=p.y-cy;return{x:x*ca-y*sa,y:x*sa+y*ca};});const xs=rot.map(p=>p.x),ys=rot.map(p=>p.y),w=Math.max(1,Math.max(...xs)-Math.min(...xs)),h=Math.max(1,Math.max(...ys)-Math.min(...ys)),scale=Math.min(440/w,440/h);const mx=(Math.max(...xs)+Math.min(...xs))/2,my=(Math.max(...ys)+Math.min(...ys))/2;
-    const pix=rot.map(p=>({x:300+(p.x-mx)*scale,y:300-(p.y-my)*scale}));ctx.lineCap='round';ctx.lineJoin='round';
-    for(let pass=0;pass<3;pass++){ctx.beginPath();for(let i=0;i<pix.length;i++){const jx=(rnd()-.5)*(pass===0?5:3),jy=(rnd()-.5)*(pass===0?5:3),x=pix[i].x+jx,y=pix[i].y+jy;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.strokeStyle=pass===0?'rgba(0,0,0,.55)':pass===1?'rgba(0,0,0,.72)':'rgba(0,0,0,.88)';ctx.lineWidth=pass===0?8:pass===1?5:2.5;ctx.stroke();}
+    // Keep true map orientation: east stays right and north stays up. Only the stroke is stylized.
+    const pts=street.coords.map(([lng,lat])=>mercator(lat,lng));const xs=pts.map(p=>p.x),ys=pts.map(p=>p.y),w=Math.max(1,Math.max(...xs)-Math.min(...xs)),h=Math.max(1,Math.max(...ys)-Math.min(...ys)),scale=Math.min(440/w,440/h);const mx=(Math.max(...xs)+Math.min(...xs))/2,my=(Math.max(...ys)+Math.min(...ys))/2;
+    let seed=Number(street.id||17)%9973;const rnd=()=>{seed=(seed*9301+49297)%233280;return seed/233280;};
+    const pix=pts.map(p=>({x:300+(p.x-mx)*scale,y:300-(p.y-my)*scale}));ctx.lineCap='round';ctx.lineJoin='round';
+    for(let pass=0;pass<3;pass++){ctx.beginPath();for(let i=0;i<pix.length;i++){const jx=(rnd()-.5)*(pass===0?5:3),jy=(rnd()-.5)*(pass===0?5:3),x=pix[i].x+jx,y=pix[i].y+jy;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.strokeStyle=pass===0?'rgba(0,0,0,.50)':pass===1?'rgba(0,0,0,.70)':'rgba(0,0,0,.90)';ctx.lineWidth=pass===0?8:pass===1?5:2.5;ctx.stroke();}
     return new Promise((resolve,reject)=>canvas.toBlob(b=>b?resolve(b):reject(new Error('Could not render street shape.')),'image/png'));
   }
   async function prepareStreetShape(q){
@@ -1046,7 +1047,9 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
 
   async function discardHeldCard(card){const ok=await confirmAction('Discard this card?',`${card.title}\n\nIt leaves your hand and goes to the discard pile until a future reshuffle.`,'Discard',true);if(!ok)return;const {error}=await state.supabase.rpc('discard_held_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();}
 
-  function chooseCastingCost(card){const cost=Number(card.cast_cost_minutes||0);if(cost<=0)return Promise.resolve([]);const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus');if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castModal').classList.remove('hidden');});}
+  function cardCostKind(card){return card?.cast_cost_kind||((Number(card?.cast_cost_minutes||0)>0)?'time':'none');}
+  function cardCostLabel(card){const kind=cardCostKind(card);if(kind==='time')return `${Number(card.cast_cost_minutes||0)} min`;if(kind==='custom')return card.cast_cost_text||'Custom cost';return '';}
+  function chooseCastingCost(card){const kind=cardCostKind(card),cost=Number(card.cast_cost_minutes||0);if(kind!=='time'||cost<=0)return Promise.resolve([]);const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus');if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castModal').classList.remove('hidden');});}
   function closeCastModal(value){$('castModal').classList.add('hidden');const r=state.castResolver;state.castResolver=null;state.castCard=null;r?.(value);}
 
   function clearProsperousPreview(){state.mapLayers.prosperousPreview?.remove();state.mapLayers.prosperousPreview=null;}
@@ -1068,7 +1071,7 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
       const cost=Number(card.cast_cost_minutes||0);let msg=card.description||'';
       if(card.duration_seconds)msg+=`\nDuration: ${formatDuration(card.duration_seconds)}.`;
       if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}
-      if(cost)msg+=`\nCost: ${cost} min.`;
+      if(cardCostKind(card)==='time'&&cost)msg+=`\nCost: ${cost} min.`;else if(cardCostKind(card)==='custom')msg+=`\nCost: ${card.cast_cost_text||'Custom requirement'}.`;
       const ok=await confirmAction(`Play ${card.title}?`,msg,'Play');if(!ok)return;
       const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
     } finally {if(prosperous)clearProsperousPreview();}
@@ -1080,7 +1083,7 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
     const prosperous=target.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
     try{
       let costKeys=[];if(target.card_kind==='curse'){costKeys=await chooseCastingCost(target);if(costKeys===null)return;}
-      let msg=`Copy “${target.title}”. The original stays in your hand.`;if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}if(Number(target.cast_cost_minutes||0))msg+=`\nCost: ${target.cast_cost_minutes} min.`;
+      let msg=`Copy “${target.title}”. The original stays in your hand.`;if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}if(cardCostKind(target)==='time'&&Number(target.cast_cost_minutes||0))msg+=`\nCost: ${target.cast_cost_minutes} min.`;else if(cardCostKind(target)==='custom')msg+=`\nCost: ${target.cast_cost_text||'Custom requirement'}.`;
       const ok=await confirmAction('Use Duplicate?',msg,'Duplicate');if(!ok)return;
       const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
     } finally {if(prosperous)clearProsperousPreview();}
@@ -1404,8 +1407,8 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   function renderCurseDraws(){
     if(state.role!=='hider')return;const earned=state.hiderDraws.filter(drawIsEarned);const hand=availableHandCards();const timeBonus=hand.filter(c=>c.card_kind==='time_bonus').reduce((sum,c)=>sum+Number(c.value_int||0),0)+state.privateCardUses.filter(u=>u.effect_key==='duplicate_bonus'&&u.is_active).reduce((sum,u)=>sum+Number(u.value_int||0),0)+state.timeTraps.filter(t=>t.trigger_active).reduce((sum,t)=>sum+Number(t.bonus_minutes||0),0);const deck=state.deckStatus;$('bonusTotal').textContent=`${timeBonus} min held/earned${deck?` · deck ${deck.remaining}/${deck.total} · cycle ${deck.cycle}`:''}`;
     const unresolved=earned.filter(d=>(d.kept_card_keys||[]).length<Number(d.keep_limit||1));
-    const drawsHtml=unresolved.length?unresolved.map(d=>{const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]),count=kept.size;return `<div class="curse-draw"><div class="curse-draw-title">New draw · choose ${d.keep_limit-count} more <span class="mini-status">(${count}/${d.keep_limit} kept)</span></div><div class="curse-options">${d.cards.map(c=>{if(kept.has(c.card_key)||used.has(c.card_key))return'';return `<div class="curse-option"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><p>${escapeHtml(c.description)}${c.duration_seconds?` · ${formatDuration(c.duration_seconds)}`:''}${Number(c.cast_cost_minutes||0)?` · costs ${c.cast_cost_minutes} min to cast`:''}</p><button class="primary small keep-toggle" data-keep-card="${c.card_key}" data-draw-id="${d.id}" data-keep-active="true" ${count>=d.keep_limit?'disabled':''}>Keep</button></div>`;}).join('')}</div></div>`;}).join(''):'<div class="mini-status">No card pick is waiting.</div>';
-    const handHtml=hand.length?`<div class="hand-grid">${hand.map(c=>`<div class="hand-card"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><div class="card-meta">${escapeHtml(c.description)}${Number(c.cast_cost_minutes||0)?` · Casting cost: ${c.cast_cost_minutes} min`:''}</div><div class="hand-actions">${c.card_kind==='time_bonus'?'<span class="answer-pill pending">TIME BONUS</span>':`<button class="primary small" data-play-card="${c.card_key}">${c.effect_key==='veto_question'?'Use on question':c.effect_key==='time_trap'?'Place':'Play'}</button>`}<button class="secondary small" data-discard-card="${c.card_key}">Discard</button></div></div>`).join('')}</div>`:'<div class="mini-status">Your hand is empty.</div>';
+    const drawsHtml=unresolved.length?unresolved.map(d=>{const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]),count=kept.size;return `<div class="curse-draw"><div class="curse-draw-title">New draw · choose ${d.keep_limit-count} more <span class="mini-status">(${count}/${d.keep_limit} kept)</span></div><div class="curse-options">${d.cards.map(c=>{if(kept.has(c.card_key)||used.has(c.card_key))return'';return `<div class="curse-option"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><p>${escapeHtml(c.description)}${c.duration_seconds?` · ${formatDuration(c.duration_seconds)}`:''}${cardCostLabel(c)?` · costs ${escapeHtml(cardCostLabel(c))}`:''}</p><button class="primary small keep-toggle" data-keep-card="${c.card_key}" data-draw-id="${d.id}" data-keep-active="true" ${count>=d.keep_limit?'disabled':''}>Keep</button></div>`;}).join('')}</div></div>`;}).join(''):'<div class="mini-status">No card pick is waiting.</div>';
+    const handHtml=hand.length?`<div class="hand-grid">${hand.map(c=>`<div class="hand-card"><div class="card-kind">${escapeHtml(c.card_kind)}</div><strong>${escapeHtml(c.title)}</strong><div class="card-meta">${escapeHtml(c.description)}${cardCostLabel(c)?` · Casting cost: ${escapeHtml(cardCostLabel(c))}`:''}</div><div class="hand-actions">${c.card_kind==='time_bonus'?'<span class="answer-pill pending">TIME BONUS</span>':`<button class="primary small" data-play-card="${c.card_key}">${c.effect_key==='veto_question'?'Use on question':c.effect_key==='time_trap'?'Place':'Play'}</button>`}<button class="secondary small" data-discard-card="${c.card_key}">Discard</button></div></div>`).join('')}</div>`:'<div class="mini-status">Your hand is empty.</div>';
     $('curseDraws').innerHTML=`<div class="card-section-title">Pending picks</div>${drawsHtml}<div class="card-section-title hand-title">Current hand</div>${handHtml}`;
     $('curseDraws').querySelectorAll('[data-keep-card]').forEach(b=>b.addEventListener('click',()=>{const d=state.hiderDraws.find(x=>x.id===b.dataset.drawId);if(d)toggleKeepCard(d,b.dataset.keepCard,true).catch(handleError);}));$('curseDraws').querySelectorAll('[data-play-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.playCard);if(c)playHandCard(c).catch(handleError);}));$('curseDraws').querySelectorAll('[data-discard-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.discardCard);if(c)discardHeldCard(c).catch(handleError);}));
   }
@@ -1424,8 +1427,8 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     $('timeTraps').querySelectorAll('[data-trigger-trap]').forEach(b=>b.addEventListener('click',()=>{const t=state.timeTraps.find(x=>x.id===b.dataset.triggerTrap);if(t)triggerTimeTrap(t,b.dataset.trapActive==='true').catch(handleError);}));
   }
 
-  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op','right_turn','passenger_princess','hide_seek_ception','wurst_stand','melange','strassenbahn_only','opernball']);
-  const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op','hide_seek_ception','wurst_stand','melange','opernball']);
+  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op','right_turn','passenger_princess','hide_seek_ception','wurst_stand','melange','strassenbahn_only','opernball','custom_rule']);
+  const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op','hide_seek_ception','wurst_stand','melange','opernball','custom_rule']);
   function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){}}
   function playCurseSound(){
     try{
@@ -1704,7 +1707,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
       }
     }
     if(scope==='pois'||scope==='all'){
-      for(const type of Object.keys(POI_QUERIES)){
+      for(const type of ACTIVE_POI_TYPES){
         try{
           const r=await refreshPoiChunked(type,status,options);
           if(r.complete)changed++;
@@ -1731,20 +1734,95 @@ ${failures.join('\n')}`,9000);
       const core=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
       if(core?.city&&validateDistricts(core.districts)&&core.stations?.length){await saveReferenceDataset(REF_ADMIN_KEY,{city:core.city,districts:core.districts},'Imported browser cache');await saveReferenceDataset(REF_STATIONS_KEY,{stations:core.stations},'Imported browser cache');count+=2;}
       const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails},'Imported browser cache');count++;}
-      for(const type of Object.keys(POI_QUERIES)){const obj=JSON.parse(localStorage.getItem(POI_CACHE_PREFIX+type)||'null');if(Array.isArray(obj?.pois)){await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',{pois:obj.pois},'Imported browser cache');count++;}}
+      for(const type of ACTIVE_POI_TYPES){const obj=JSON.parse(localStorage.getItem(POI_CACHE_PREFIX+type)||'null');if(Array.isArray(obj?.pois)){await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',{pois:obj.pois},'Imported browser cache');count++;}}
       toast(`Imported ${count} cached dataset${count===1?'':'s'} to Supabase.`);await loadDeveloperDashboard();
     }catch(e){handleError(e);}
   }
+  function showDeveloperTab(name){
+    document.querySelectorAll('[data-developer-tab]').forEach(b=>b.classList.toggle('active',b.dataset.developerTab===name));
+    $('developerReferenceTab').classList.toggle('hidden',name!=='reference');
+    $('developerCardsTab').classList.toggle('hidden',name!=='cards');
+    $('developerGamesTab').classList.toggle('hidden',name!=='games');
+  }
+  function minuteCostOptions(selected){
+    const values=[];for(let m=5;m<=60;m+=5)values.push(m);values.push(90,120);
+    return values.map(m=>`<option value="${m}" ${Number(selected)===m?'selected':''}>${m} min</option>`).join('');
+  }
+  function durationOptions(seconds){
+    const options=[[null,'No timer'],[600,'10 min'],[1200,'20 min'],[1800,'30 min'],[2400,'40 min'],[2700,'45 min'],[3600,'60 min'],[5400,'90 min'],[7200,'120 min']];
+    return options.map(([v,label])=>`<option value="${v??''}" ${String(seconds??'')===String(v??'')?'selected':''}>${label}</option>`).join('');
+  }
+  function developerCardHtml(c={},isNew=false){
+    const costKind=c.cast_cost_kind||((Number(c.cast_cost_minutes||0)>0)?'time':'none');
+    const key=c.card_key||'',isCurse=isNew||(c.card_kind||'curse')==='curse';
+    return `<div class="developer-card ${c.enabled===false?'disabled':''}" data-developer-card="${escapeHtml(key)}" data-new-card="${isNew?'true':'false'}">
+      <div class="card-key">${isNew?'New card · key created on save':escapeHtml(key)}</div>
+      <div class="developer-card-grid">
+        <label>Title<input class="dev-card-title" maxlength="120" value="${escapeHtml(c.title||'')}"></label>
+        <label>Type<select class="dev-card-kind" disabled><option value="curse" ${(c.card_kind||'curse')==='curse'?'selected':''}>Curse</option><option value="powerup" ${c.card_kind==='powerup'?'selected':''}>Power-up</option><option value="time_bonus" ${c.card_kind==='time_bonus'?'selected':''}>Time bonus</option><option value="time_trap" ${c.card_kind==='time_trap'?'selected':''}>Time trap</option></select></label>
+        <label>Duration<select class="dev-card-duration">${durationOptions(c.duration_seconds)}</select></label>
+        <label class="check-row"><input type="checkbox" class="dev-card-enabled" ${c.enabled===false?'':'checked'}> In deck</label>
+      </div>
+      <label>Card text<textarea class="dev-card-description" maxlength="1200">${escapeHtml(c.description||'')}</textarea></label>
+      <div class="card-cost-row ${isCurse?'':'hidden'}">
+        <label>Casting cost<select class="dev-card-cost-kind"><option value="none" ${costKind==='none'?'selected':''}>None</option><option value="time" ${costKind==='time'?'selected':''}>Time bonus</option><option value="custom" ${costKind==='custom'?'selected':''}>Custom</option></select></label>
+        <label class="card-cost-minutes ${costKind==='time'?'':'hidden'}">Minutes<select class="dev-card-cost-minutes">${minuteCostOptions(c.cast_cost_minutes||5)}</select></label>
+        <label class="card-cost-custom ${costKind==='custom'?'':'hidden'}">Custom cost<input class="dev-card-cost-text" maxlength="240" value="${escapeHtml(c.cast_cost_text||'') }" placeholder="e.g. Roll a 6, sing a song…"></label>
+      </div>${isCurse?'':'<div class="mini-status">Casting costs apply to curse cards. This special card uses its built-in action.</div>'}
+      <div class="developer-card-actions"><button class="secondary" data-save-developer-card>Save</button>${isNew?'':`<button class="danger" data-delete-developer-card>Remove</button>`}</div>
+    </div>`;
+  }
+  function renderDeveloperCards(cards){
+    state.developerCards=cards||[];
+    $('developerCards').innerHTML=state.developerCards.length?state.developerCards.map(c=>developerCardHtml(c,false)).join(''):'<div class="status-box">No cards in the catalogue.</div>';
+    bindDeveloperCardRows();
+  }
+  function bindDeveloperCardRows(){
+    $('developerCards').querySelectorAll('.dev-card-cost-kind').forEach(sel=>{if(sel.dataset.bound)return;sel.dataset.bound='1';sel.addEventListener('change',()=>{const row=sel.closest('.developer-card'),kind=sel.value;row.querySelector('.card-cost-minutes').classList.toggle('hidden',kind!=='time');row.querySelector('.card-cost-custom').classList.toggle('hidden',kind!=='custom');});});
+    $('developerCards').querySelectorAll('[data-save-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminSaveCard(b.closest('.developer-card')).catch(handleError));});
+    $('developerCards').querySelectorAll('[data-delete-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminDeleteCard(b.closest('.developer-card')).catch(handleError));});
+  }
+  function addDeveloperCardForm(){
+    if($('developerCards').querySelector('[data-new-card="true"]'))return toast('Finish or remove the new card form first.');
+    $('developerCards').insertAdjacentHTML('afterbegin',developerCardHtml({card_kind:'curse',effect_key:'custom_rule',enabled:true,cast_cost_kind:'none'},true));bindDeveloperCardRows();
+    $('developerCards').querySelector('[data-new-card="true"] .dev-card-title')?.focus();
+  }
+  async function adminSaveCard(row){
+    const isNew=row.dataset.newCard==='true',costKind=row.querySelector('.dev-card-cost-kind').value;
+    const args={
+      p_password:state.developerPassword,p_card_key:isNew?'':row.dataset.developerCard,
+      p_title:row.querySelector('.dev-card-title').value.trim(),p_description:row.querySelector('.dev-card-description').value.trim(),
+      p_duration_seconds:row.querySelector('.dev-card-duration').value===''?null:Number(row.querySelector('.dev-card-duration').value),
+      p_card_kind:row.querySelector('.dev-card-kind').value,p_effect_key:isNew?'custom_rule':(state.developerCards.find(c=>c.card_key===row.dataset.developerCard)?.effect_key||'custom_rule'),
+      p_value_int:isNew?null:(state.developerCards.find(c=>c.card_key===row.dataset.developerCard)?.value_int??null),
+      p_cast_cost_kind:costKind,p_cast_cost_minutes:costKind==='time'?Number(row.querySelector('.dev-card-cost-minutes').value):0,
+      p_cast_cost_text:costKind==='custom'?row.querySelector('.dev-card-cost-text').value.trim():null,p_enabled:row.querySelector('.dev-card-enabled').checked
+    };
+    const ok=await confirmAction(isNew?'Add this card?':'Save card changes?',`${args.p_title}\n\n${args.p_description}`,'Save');if(!ok)return;
+    const {error}=await state.supabase.rpc('admin_save_card_v1',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+  }
+  async function adminDeleteCard(row){
+    const key=row.dataset.developerCard,title=row.querySelector('.dev-card-title').value.trim();
+    const ok=await confirmAction('Remove this card from the deck?',`${title}\n\nIt will disappear from future draws and reshuffles. Already-drawn copies in running games are not changed.`,'Remove',true);if(!ok)return;
+    const {error}=await state.supabase.rpc('admin_delete_card_v1',{p_password:state.developerPassword,p_card_key:key});if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+  }
+
   async function developerLogin(){
     initSupabaseIfNeeded();const pw=$('developerPassword').value;if(!pw)return toast('Enter the developer password.');
-    const {data,error}=await state.supabase.rpc('admin_list_games_v1',{p_password:pw});if(error)throw error;state.developerPassword=pw;$('developerLoginPanel').classList.add('hidden');$('developerPanel').classList.remove('hidden');renderDeveloperGames(data||[]);await loadDeveloperDashboard();
+    const {data,error}=await state.supabase.rpc('admin_list_games_v1',{p_password:pw});if(error)throw error;state.developerPassword=pw;$('developerLoginPanel').classList.add('hidden');$('developerPanel').classList.remove('hidden');renderDeveloperGames(data||[]);showDeveloperTab('reference');await loadDeveloperDashboard();
   }
   async function loadDeveloperDashboard(){
     if(!state.developerPassword)return;
-    const [{data:games,error}, {data:refs,error:refErr}]=await Promise.all([state.supabase.rpc('admin_list_games_v1',{p_password:state.developerPassword}),state.supabase.from('reference_datasets').select('dataset_key,source,content_hash,updated_at,checked_at').order('dataset_key')]);if(error)throw error;if(refErr)throw refErr;renderDeveloperGames(games||[]);renderReferenceStatus(refs||[]);
+    const [gamesRes,refsRes,cardsRes]=await Promise.all([
+      state.supabase.rpc('admin_list_games_v1',{p_password:state.developerPassword}),
+      state.supabase.from('reference_datasets').select('dataset_key,source,content_hash,updated_at,checked_at').order('dataset_key'),
+      state.supabase.rpc('admin_list_cards_v1',{p_password:state.developerPassword})
+    ]);
+    if(gamesRes.error)throw gamesRes.error;if(refsRes.error)throw refsRes.error;if(cardsRes.error)throw cardsRes.error;
+    renderDeveloperGames(gamesRes.data||[]);renderReferenceStatus(refsRes.data||[]);renderDeveloperCards(cardsRes.data||[]);
   }
   function renderReferenceStatus(refs){
-    const required=[REF_ADMIN_KEY,REF_STATIONS_KEY,REF_TRANSIT_KEY,...Object.keys(POI_QUERIES).map(t=>REF_POI_PREFIX+t+'_v1')];const by=new Map(refs.map(r=>[r.dataset_key,r]));
+    const required=[REF_ADMIN_KEY,REF_STATIONS_KEY,REF_TRANSIT_KEY,...ACTIVE_POI_TYPES.map(t=>REF_POI_PREFIX+t+'_v1')];const by=new Map(refs.map(r=>[r.dataset_key,r]));
     $('developerReferenceList').innerHTML=required.map(k=>{const r=by.get(k);return `<div class="reference-row ${r?'ok':'missing'}"><strong>${escapeHtml(k)}</strong><span>${r?`${escapeHtml(r.source||'saved')} · changed ${new Date(r.updated_at).toLocaleString()}${r.checked_at?` · checked ${new Date(r.checked_at).toLocaleString()}`:''}`:'MISSING'}</span></div>`;}).join('');
   }
   function renderDeveloperGames(games){
@@ -1754,13 +1832,13 @@ ${failures.join('\n')}`,9000);
   }
   async function adminSaveGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value.trim(),status=row.querySelector('.admin-game-status').value;const ok=await confirmAction('Save game changes?',`${name}\nStatus: ${status}`,'Save');if(!ok)return;const {error}=await state.supabase.rpc('admin_update_game_v1',{p_password:state.developerPassword,p_game_id:id,p_name:name,p_status:status});if(error)throw error;await loadDeveloperDashboard();}
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
-  function openDeveloper(){state.developerPassword=null;$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
+  function openDeveloper(){state.developerPassword=null;state.developerCards=[];$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
   function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
-    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshOnePoi')?.addEventListener('click',()=>refreshSelectedPoi().catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);
+    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshOnePoi')?.addEventListener('click',()=>refreshSelectedPoi().catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);$('developerAddCard').addEventListener('click',addDeveloperCardForm);document.querySelectorAll('[data-developer-tab]').forEach(b=>b.addEventListener('click',()=>showDeveloperTab(b.dataset.developerTab)));
     document.querySelector('[data-action="open-hider"]').addEventListener('click',()=>openLobby('hider'));document.querySelector('[data-action="open-seeker"]').addEventListener('click',()=>openLobby('seeker'));document.querySelector('[data-action="home"]').addEventListener('click',()=>showView('homeView'));document.querySelector('[data-action="leave-game"]').addEventListener('click',leaveGame);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});

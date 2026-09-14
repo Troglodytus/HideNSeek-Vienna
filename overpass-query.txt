@@ -1,7 +1,7 @@
-Vienna Hide & Seek v3.7.0 — Overpass fallback / OSM-only POIs
+Vienna Hide & Seek v3.8.0 — Overpass fallback / OSM-only POIs
 
 Runtime gameplay uses Supabase reference datasets. Developer refreshes split Vienna into 16 small tiles.
-Core districts and transport use Stadt Wien data. The following categories use OSM/Overpass when no Vienna WFS source is configured.
+Core districts and transport use Stadt Wien data. The following active categories use OSM/Overpass when no Vienna WFS source is configured.
 
 Vienna bbox (south, west, north, east):
 48.117668,16.18218,48.322571,16.577511
@@ -18,11 +18,10 @@ Cemetery / graveyard:
 Church / Christian place of worship:
 [out:json][timeout:30];nwr["amenity"="place_of_worship"]["religion"="christian"](48.117668,16.18218,48.322571,16.577511);out center tags;
 
-Zoo:
-[out:json][timeout:30];nwr["tourism"="zoo"](48.117668,16.18218,48.322571,16.577511);out center tags;
+Zoo / aquarium (one Tentacle category):
+[out:json][timeout:30];(
+  nwr["tourism"="zoo"](48.117668,16.18218,48.322571,16.577511);
+  nwr["tourism"="aquarium"](48.117668,16.18218,48.322571,16.577511);
+);out center tags;
 
-Aquarium:
-[out:json][timeout:30];nwr["tourism"="aquarium"](48.117668,16.18218,48.322571,16.577511);out center tags;
-
-Amusement park:
-[out:json][timeout:30];nwr["tourism"="theme_park"](48.117668,16.18218,48.322571,16.577511);out center tags;
+The old amusement-park dataset may remain in Supabase for compatibility/history, but it is not an active v3.8 question category.
