@@ -347,3 +347,13 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
   .curse-chip span:last-child{display:block;}
   .game-score-meta{font-size:8px;max-width:150px;}
 }
+
+/* v3.6 public traps, Endgame zone and final score */
+.time-trap-map { background:transparent; border:0; }
+.time-trap-map span { display:grid; place-items:center; width:26px; height:26px; border-radius:50%; background:#fef3c7; border:2px solid #d97706; box-shadow:0 1px 5px rgba(0,0,0,.25); font-size:15px; }
+.time-trap-map.triggered span { background:#dcfce7; border-color:#16a34a; opacity:.82; }
+.finish-game-panel { border-color:#fecaca; background:#fffafa; }
+.final-score-summary { display:grid; gap:3px; margin-bottom:9px; padding:9px 10px; border-radius:10px; background:#f0fdf4; border:1px solid #bbf7d0; }
+.final-score-summary strong { color:#166534; }
+.final-score-summary span { color:#4b5563; font-size:10px; }
+.game-entry.finished { opacity:.9; background:#f8fafc; }

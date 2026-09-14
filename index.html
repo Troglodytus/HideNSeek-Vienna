@@ -7,21 +7,20 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css?v=3.5.0" />
+  <link rel="stylesheet" href="./styles.css?v=3.6.0" />
 </head>
 <body>
   <main id="app">
     <section id="homeView" class="view home-view active">
       <div class="hero-card">
         <div class="eyebrow">VIENNA</div>
-        <h1>Hide &amp; Seek</h1>
-        <p class="subtitle">A two-stage, map-driven hider/seeker game for Vienna.</p>
+        <h1>Hide &amp; Seek: Vienna</h1>
         <div class="home-actions">
           <button class="mode-button hider" data-action="open-hider">Hider</button>
           <button class="mode-button seeker" data-action="open-seeker">Seeker</button>
         </div>
         <button class="developer-link" data-action="open-developer">Developer</button>
-        <p class="fineprint">OpenStreetMap / Overpass · Vienna U-Bahn + passenger rail · 250 m base hiding zone</p>
+        
       </div>
     </section>
 
@@ -73,7 +72,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.5.0</div><h2>Administration &amp; reference data</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.6.0</div><h2>Administration &amp; reference data</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -133,9 +132,13 @@
           </div>
 
           <section id="gameClockControls" class="panel game-clock-controls hidden">
-            <div class="row-between"><div><div class="eyebrow">GAME TIME</div><h3>Shared game clock</h3></div><span id="gameClockStatus" class="mini-status">Paused</span></div>
+            <div class="row-between"><div><div class="eyebrow">GAME TIME</div><h3>Game Clock</h3></div><span id="gameClockStatus" class="mini-status">Paused</span></div>
             <div class="location-row"><button id="startGameClockButton" class="primary">Start game time</button><button id="pauseGameClockButton" class="secondary" disabled>Pause</button></div>
-            <p class="hint">Only the Hider controls the clock. The elapsed time shown in the top bar is synchronized for both roles.</p>
+          </section>
+
+          <section id="finishGamePanel" class="panel finish-game-panel">
+            <div id="finalScoreSummary" class="final-score-summary hidden"></div>
+            <button id="hiderFoundButton" class="danger full">Hider Found</button>
           </section>
 
           <section id="currentPositionPanel" class="panel current-position-panel">
@@ -146,7 +149,6 @@
               <button id="currentClearButton" class="secondary">Clear</button>
             </div>
             <div id="currentPositionStatus" class="status-box">No current position set.</div>
-            <p class="hint">The manual marker can be dragged. Using phone GPS enables ~30-minute refreshes while the tab remains active. Seeker GPS is visible only to the Hider; Hider GPS remains local/private unless explicitly used to start Endgame.</p>
           </section>
 
           <section id="seekerQuestionLocation" class="panel question-origin-panel hidden">
@@ -155,7 +157,16 @@
               <button id="originGpsMode" class="segment active" data-origin-mode="gps">Automatic current location</button>
               <button id="originMapMode" class="segment" data-origin-mode="map">Use manual/current marker</button>
             </div>
-            <p class="hint">GPS mode obtains a fresh position when you choose a question. Manual mode uses the draggable Current Position marker above; selecting manual mode immediately lets you tap the map to place it.</p>
+          </section>
+
+          <section id="seekerEndgamePanel" class="panel hidden">
+            <div class="row-between"><div><div class="eyebrow">ENDGAME</div><h3>Station zone</h3></div><span id="seekerEndgameStatus" class="mini-status">Not started</span></div>
+            <button id="seekerEndgameButton" class="secondary full">Start Endgame</button>
+          </section>
+
+          <section id="pendingQuestionsPanel" class="panel pending-questions-panel">
+            <div class="row-between"><div><div class="eyebrow">ONGOING</div><h3>Current questions</h3></div><span id="pendingQuestionCount" class="mini-status"></span></div>
+            <div id="pendingQuestions" class="question-list"></div>
           </section>
 
           <section class="question-menu panel">
@@ -163,7 +174,6 @@
               <div><div class="eyebrow">QUESTION DECK</div><h3>Choose a question</h3></div>
               <span id="questionDeckStatus" class="mini-status"></span>
             </div>
-            <p class="hint question-menu-hint">Questions are grouped by type. Asked cards are greyed out on both screens. Radar/District/Thermometer questions preview the cut geometry; Tentacles preview every candidate POI before sending.</p>
             <div id="questionDeck" class="question-deck"></div>
           </section>
         </div>
@@ -173,31 +183,23 @@
             <div class="panel compact">
               <h3>Latest question location</h3>
               <div id="seekerLocationStatus" class="status-box">No question location has been sent.</div>
-              <p class="hint">GPS accuracy is shown when available. Manual coordinates are intentionally accepted when underground GPS is unreliable.</p>
             </div>
           </div>
 
           <div id="hiderControls" class="role-controls hidden">
             <div class="panel compact private-panel">
-              <div class="row-between"><h3>Private hider phase</h3><span class="private-badge">HIDER ONLY</span></div>
+              <div class="row-between"><h3>Hider</h3><span class="private-badge">PRIVATE</span></div>
               <div id="hiderSecretStatus" class="status-box"></div>
               <div class="eyebrow seeker-tracking-label">SEEKER GPS</div><div id="hiderSeekerLiveStatus" class="status-box">No seeker GPS position has been published yet.</div>
-              <button id="prepareEndgameButton" class="secondary full">Seekers reached my station — prepare Endgame</button>
+              <button id="prepareEndgameButton" class="secondary full">Set actual hiding spot</button>
               <div id="endgameLocationControls" class="hidden">
-                <p class="hint">Now choose your actual hiding location. It must lie inside the current station hiding radius and remains completely private.</p>
                 <div class="location-row three"><button id="endgameCurrentButton" class="secondary">Use current marker</button><button id="endgameGpsButton" class="secondary">Fresh GPS</button><button id="endgamePickButton" class="secondary">Pick on map</button></div>
                 <div id="endgameLocationStatus" class="status-box">No final hiding spot selected yet.</div>
               </div>
               <button id="toggleEndgameButton" class="primary full hidden"></button>
-              <p class="hint">Starting Endgame is manual and secret. Before it starts, answer previews use the station. After it starts, they use the chosen actual hiding coordinate. Seekers receive no phase flag or notification.</p>
-            </div>
-            <div class="panel compact">
-              <h3>Pending questions</h3>
-              <div id="pendingQuestions" class="question-list"></div>
             </div>
             <div class="panel compact">
               <div class="row-between"><h3>Hider hand &amp; draws</h3><span id="bonusTotal" class="mini-status"></span></div>
-              <p class="hint">Pending draws appear first. Kept cards move into your hand. The deck is finite and shuffled once; it reshuffles only after the draw pile is exhausted. You may discard held cards. Some curses require time-bonus cards as casting cost.</p>
               <div id="curseDraws" class="curse-draw-list"></div>
             </div>
             <div class="panel compact">
@@ -213,7 +215,6 @@
 
           <div class="panel compact">
             <div class="row-between"><h3>Activity</h3><span id="remainingAreaText" class="mini-status"></span></div>
-            <p class="hint">Questions and answers are grouped into one compact row. Undo/redo always asks for confirmation.</p>
             <div id="activityHistory" class="question-list"></div>
           </div>
         </aside>
@@ -255,6 +256,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.5.0"></script>
+  <script src="./app.js?v=3.6.0"></script>
 </body>
 </html>

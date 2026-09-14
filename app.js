@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.5.0';
+  const APP_VERSION = '3.6.0';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -34,7 +34,10 @@
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
 
   const QUESTION_CARDS = [
-    { slot:'same-district', category:'MIXED', title:'Same District', detail:'Are you in the same Vienna Bezirk?', kind:'district' },
+    { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
+    { slot:'same-line', category:'MIXED', title:'Same U-/S-Bahn Line?', detail:'Does the hiding station share a U-Bahn or S-Bahn line with your nearest rail station?', kind:'same_line' },
+    { slot:'north-of-me', category:'MIXED', title:'North of Me?', detail:'Is the target north of your position?', kind:'directional', axis:'lat', positive_label:'North', negative_label:'South' },
+    { slot:'east-of-me', category:'MIXED', title:'East of Me?', detail:'Is the target east of your position?', kind:'directional', axis:'lng', positive_label:'East', negative_label:'West' },
     { slot:'radar-20000', category:'RADAR', title:'20 km Radar', detail:'Is the target within 20 km of this location?', kind:'radar', radius_m:20000 },
     { slot:'radar-10000', category:'RADAR', title:'10 km Radar', detail:'Is the target within 10 km of this location?', kind:'radar', radius_m:10000 },
     { slot:'radar-5000', category:'RADAR', title:'5 km Radar', detail:'Is the target within 5 km of this location?', kind:'radar', radius_m:5000 },
@@ -55,7 +58,10 @@
     { slot:'photo-water', category:'PHOTO', title:'Biggest body of water', detail:'Send a photo of the biggest body of water visible from the hiding area.', kind:'photo', photo_prompt:'Biggest body of water' },
     { slot:'photo-structure', category:'PHOTO', title:'Highest visible structure', detail:'Send a photo of the highest visible structure.', kind:'photo', photo_prompt:'Highest visible structure' },
     { slot:'photo-selfie', category:'PHOTO', title:'Selfie', detail:'Send a current selfie from the hiding location.', kind:'photo', photo_prompt:'Selfie' },
-    { slot:'photo-four-houses', category:'PHOTO', title:'At least 4 houses in one image', detail:'Send one photo containing at least four houses.', kind:'photo', photo_prompt:'At least 4 houses in one image' }
+    { slot:'photo-four-houses', category:'PHOTO', title:'At least 4 houses in one image', detail:'One photo with at least four houses.', kind:'photo', photo_prompt:'At least 4 houses in one image' },
+    { slot:'photo-street-sign', category:'PHOTO', title:'Nearest street sign', detail:'Photograph the nearest street-name sign.', kind:'photo', photo_prompt:'Nearest street sign' },
+    { slot:'photo-up', category:'PHOTO', title:'View straight up', detail:'Photograph the view straight upward.', kind:'photo', photo_prompt:'View straight up' },
+    { slot:'photo-transit', category:'PHOTO', title:'Nearest transit sign', detail:'Photograph the nearest public-transport stop or station sign.', kind:'photo', photo_prompt:'Nearest public transport sign' }
   ];
 
   const POI_QUERIES = {
@@ -72,7 +78,7 @@
   const state = {
     supabase:null, mapData:null, createMap:null, gameMap:null, mapLayers:{},
     createStation:null,
-    endgameCandidate:null, endgameAccuracyM:null, endgamePickMode:false, endgamePrepareMode:false,
+    endgameCandidate:null, endgameAccuracyM:null, endgamePickMode:false, endgamePrepareMode:false, seekerEndgamePickMode:false,
     role:null, game:null, hiderPassword:null, secret:null,
     actions:[], hiderDraws:[], timeTraps:[], privateCardUses:[],
     seekerOriginMode:'gps', seekerPoint:null, seekerAccuracyM:null, seekerMarker:null, seekerAccuracyCircle:null,
@@ -622,10 +628,11 @@
     return new Promise((resolve,reject)=>{ if(!navigator.geolocation)return reject(new Error('This browser does not support geolocation.')); navigator.geolocation.getCurrentPosition(p=>resolve({lat:p.coords.latitude,lng:p.coords.longitude,accuracy_m:p.coords.accuracy}),e=>reject(new Error(`Location failed: ${e.message}`)),{enableHighAccuracy:true,timeout:15000,maximumAge:3000}); });
   }
 
-  async function loadGames(){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status,created_at').eq('status','active').order('created_at',{ascending:false}); if(error)throw error; renderGameChoices(data||[]); return data||[]; }
+  async function loadGames(){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status,created_at,final_score_seconds,finished_at').order('created_at',{ascending:false}); if(error)throw error; renderGameChoices(data||[]); return data||[]; }
   function renderGameChoices(games){
-    $('hiderGameSelect').innerHTML=games.length?games.map(g=>`<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join(''):'<option value="">No active games</option>';
-    $('gameList').innerHTML=games.length?games.map(g=>`<div class="game-entry"><div><strong>${escapeHtml(g.name)}</strong><span>${new Date(g.created_at).toLocaleString()}</span></div><button class="primary" data-enter-seeker="${g.id}">Enter</button></div>`).join(''):'<div class="status-box">No active games yet.</div>';
+    const active=games.filter(g=>g.status==='active');
+    $('hiderGameSelect').innerHTML=active.length?active.map(g=>`<option value="${escapeHtml(g.id)}">${escapeHtml(g.name)}</option>`).join(''):'<option value="">No active games</option>';
+    $('gameList').innerHTML=games.length?games.map(g=>{const finished=g.status==='finished';return `<div class="game-entry ${finished?'finished':''}"><div><strong>${escapeHtml(g.name)}</strong><span>${finished?`Finished · ${formatCountdown(Number(g.final_score_seconds||0))}`:new Date(g.created_at).toLocaleString()}</span></div>${finished?'<span class="answer-pill">Ended</span>':`<button class="primary" data-enter-seeker="${g.id}">Enter</button>`}</div>`;}).join(''):'<div class="status-box">No games yet.</div>';
     $('gameList').querySelectorAll('[data-enter-seeker]').forEach(b=>b.addEventListener('click',()=>enterSeeker(b.dataset.enterSeeker).catch(handleError)));
   }
 
@@ -633,10 +640,8 @@
     initSupabaseIfNeeded(); const name=$('createGameName').value.trim(),password=$('createPassword').value;
     if(!name)return toast('Enter a game name.'); if(password.length<4)return toast('Use a password of at least 4 characters.'); if(!state.createStation)return toast('Choose the hiding station.');
     const [slng,slat]=state.createStation.geometry.coordinates;
-    const ok=await confirmAction('Create this game?',`Game: ${name}
-Secret station target: ${state.createStation.properties.stationName}
-
-You do NOT choose the final hiding spot yet. Until you privately start Endgame, every answer is calculated against this station coordinate.`,'Create game'); if(!ok)return;
+    const ok=await confirmAction('Create game?',`${name}
+Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok)return;
     const {data,error}=await state.supabase.rpc('create_game_v4',{p_name:name,p_password:password,p_station_name:state.createStation.properties.stationName,p_station_lat:slat,p_station_lng:slng}); if(error)throw error; await enterHider(data,password);
   }
 
@@ -655,15 +660,20 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
   async function enterGameCommon(){
     state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
     await ensureMapData(); setupGameMap();
-    $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
+    $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
     showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
   }
 
   function setupGameMap(){
     if(!state.gameMap){ state.gameMap=L.map('gameMap',baseMapOptions()); addBaseTiles(state.gameMap); state.gameMap.on('click',e=>handleGameMapClick(e.latlng)); }
     clearPrivateMapLayers();
-    drawReferenceLayers(state.gameMap,'game-',f=>{ if(state.role==='hider'&&state.trapPlacementCard)placeTimeTrapAtStation(f).catch(handleError); });
+    drawReferenceLayers(state.gameMap,'game-',f=>handleReferenceStationClick(f));
     state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[5,5]});
+  }
+
+  function handleReferenceStationClick(feature){
+    if(state.role==='hider'&&state.trapPlacementCard){placeTimeTrapAtStation(feature).catch(handleError);return;}
+    if(state.role==='seeker'&&state.seekerEndgamePickMode){startSeekerEndgameAtStation(feature).catch(handleError);return;}
   }
 
   function handleGameMapClick(latlng){
@@ -698,8 +708,8 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
   function stopGpsAutoTracking(){if(state.gpsAutoTimer)clearInterval(state.gpsAutoTimer);state.gpsAutoTimer=null;state.gpsAutoEnabled=false;}
   async function refreshGpsAutoPosition(){if(!state.game||!state.gpsAutoEnabled)return;try{const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'},{pan:false});if(state.role==='seeker')await publishSeekerLivePosition(p);}catch(e){console.warn('Automatic GPS refresh failed',e);}}
   function startGpsAutoTracking(){stopGpsAutoTracking();state.gpsAutoEnabled=true;state.gpsAutoTimer=setInterval(()=>refreshGpsAutoPosition(),30*60*1000);}
-  async function useCurrentGps(){const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();$('currentPositionStatus').textContent+=' · auto-refresh every ~30 min';toast('GPS set. It will refresh about every 30 minutes while this game page remains active.');}
-  function beginManualCurrentPosition(){stopGpsAutoTracking();state.pickMode='current_position';toast('Tap anywhere on the map to set your current position. You can also drag the marker afterward.');}
+  async function useCurrentGps(){const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();$('currentPositionStatus').textContent+=' · auto 30 min';toast('GPS set.');}
+  function beginManualCurrentPosition(){stopGpsAutoTracking();state.pickMode='current_position';toast('Tap the map to set your position.');}
 
 
   function cancelQuestionPreview(){
@@ -716,6 +726,14 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
     }
     return {...origin};
   }
+
+  function nearestRailStation(origin){
+    if(!origin||!state.mapData?.stations?.length)return null;let best=null,bestD=Infinity;const pt=turf.point([Number(origin.lng),Number(origin.lat)]);
+    for(const f of state.mapData.stations){const refs=(f.properties?.lineRefs||[]).filter(r=>/^[US]\d+/i.test(r));if(!refs.length)continue;const d=turf.distance(pt,f,{units:'meters'});if(d<bestD){bestD=d;best=f;}}
+    return best?{feature:best,distance_m:bestD,lineRefs:(best.properties?.lineRefs||[]).filter(r=>/^[US]\d+/i.test(r))}:null;
+  }
+  function matchingTransitFeatures(refs){const wanted=new Set((refs||[]).map(String));return (state.mapData?.railLines||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r))));}
+  function sameLineCorridor(refs){let out=null;for(const f of matchingTransitFeatures(refs)){try{const b=turf.buffer(f,.4,{units:'kilometers',steps:12});out=safeUnion(out,b);}catch(_){}}return out;}
 
   async function askQuestionPayload(card,payload,description){
     const ok=await confirmAction('Send this question?',`${description}\n\nThe Hider gets 15 minutes to resolve it before late-answer penalties begin.`,`Send ${card.title}`);
@@ -771,11 +789,17 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
 
     const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
     let payload={slot_key:card.slot,question_kind:card.kind,title:card.title,origin};let description=`${card.title}\nOrigin: ${origin.lat.toFixed(5)}, ${origin.lng.toFixed(5)}${origin.accuracy_m?` · GPS ±${Math.round(origin.accuracy_m)} m`:' · manual'}`;
-    if(card.kind==='radar'){
+    if(card.kind==='same_line'){
+      const near=nearestRailStation(origin);if(!near||!near.lineRefs.length)return toast('No U-/S-Bahn station with line data found nearby.');
+      payload.seeker_station_name=near.feature.properties?.stationName||'Station';payload.line_refs=near.lineRefs;payload.station_distance_m=Math.round(near.distance_m);
+      description+=`\nNearest rail station: ${payload.seeker_station_name} · ${payload.line_refs.join(', ')}`;previewQuestionGeometry(payload);
+    }else if(card.kind==='radar'){
       payload.center={lat:origin.lat,lng:origin.lng};payload.radius_m=card.radius_m;previewQuestionGeometry(payload);
       if(origin.accuracy_m&&origin.accuracy_m>Math.max(25,card.radius_m/2))description+=`\nWARNING: GPS accuracy (±${Math.round(origin.accuracy_m)} m) is poor relative to this Radar radius.`;
     }else if(card.kind==='district'){
       const d=pointDistrict(turf.point([origin.lng,origin.lat]));if(!d)return toast('This question origin is outside Vienna.');payload.district_number=d.number;payload.district_name=d.name;description+=`\nDistrict: ${d.number}. ${d.name}`;previewQuestionGeometry(payload);
+    }else if(card.kind==='directional'){
+      payload.axis=card.axis;payload.positive_label=card.positive_label;payload.negative_label=card.negative_label;previewQuestionGeometry(payload);
     }
     state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;
     const sent=await askQuestionPayload(card,payload,description);if(!sent){state.previewQuestionSlot=card.slot;state.previewQuestionCard=card;renderQuestionDeck();}
@@ -807,7 +831,7 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
   }
   function clearPoiPreview(){state.mapLayers.poiPreview?.remove();state.mapLayers.poiReach?.remove();state.mapLayers.poiPreview=null;state.mapLayers.poiReach=null;}
   function clearPendingOverlay(){
-    ['pendingCircle','pendingLine','pendingDistrict','pendingBisector','pendingThermoPath','pendingTentacleCell'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
+    ['pendingCircle','pendingLine','pendingDistrict','pendingBisector','pendingThermoPath','pendingDirection','pendingSameLine','pendingTentacleCell'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
   }
   function thermometerBisectorLine(from,to){
     const A=mercator(from.lat,from.lng),B=mercator(to.lat,to.lng);const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy);if(len<1)return null;
@@ -819,6 +843,13 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
     if(p.question_kind==='district'){
       const d=state.mapData?.districts?.find(x=>x.number===Number(p.district_number));
       if(d)state.mapLayers.pendingDistrict=L.geoJSON(d.feature,{style:{color:'#f59e0b',weight:3,dashArray:'7 5',fillColor:'#f59e0b',fillOpacity:.15},interactive:false}).addTo(state.gameMap);
+    }
+    if(p.question_kind==='same_line'&&Array.isArray(p.line_refs)){
+      const features=matchingTransitFeatures(p.line_refs);if(features.length)state.mapLayers.pendingSameLine=L.geoJSON({type:'FeatureCollection',features},{style:{color:'#f59e0b',weight:7,opacity:.8},interactive:false}).addTo(state.gameMap);
+    }
+    if(p.question_kind==='directional'&&p.origin){
+      const lat=Number(p.origin.lat),lng=Number(p.origin.lng),line=p.axis==='lat'?[[lat,lng-1],[lat,lng+1]]:[[lat-1,lng],[lat+1,lng]];
+      state.mapLayers.pendingDirection=L.polyline(line,{color:'#f59e0b',weight:4,dashArray:'8 5',opacity:.95}).addTo(state.gameMap);
     }
     if(p.question_kind==='thermometer'){
       state.mapLayers.pendingThermoPath=L.polyline([[p.from.lat,p.from.lng],[p.to.lat,p.to.lng]],{color:'#fbbf24',weight:2,dashArray:'4 6',opacity:.8}).addTo(state.gameMap);
@@ -842,6 +873,8 @@ You do NOT choose the final hiding spot yet. Until you privately start Endgame, 
     const target=hiderTargetPoint(); if(!target)return null; const p=q.payload||{};
     if(p.question_kind==='radar'){const d=turf.distance(target,turf.point([p.center.lng,p.center.lat]),{units:'meters'});return {type:'boolean',value:d<=Number(p.radius_m),text:d<=Number(p.radius_m)?`HIT — target is ${Math.round(d)} m away.`:`MISS — target is ${Math.round(d)} m away.`};}
     if(p.question_kind==='district'){const d=pointDistrict(target);const yes=d?.number===Number(p.district_number);return {type:'boolean',value:yes,text:yes?`YES — target is in ${p.district_number}. ${p.district_name}.`:`NO — target is in ${d?`${d.number}. ${d.name}`:'another area'}.`};}
+    if(p.question_kind==='same_line'){const [lng,lat]=state.secret.station.geometry.coordinates;const hs=nearestRailStation({lat,lng});const targetRefs=new Set(hs?.lineRefs||[]),common=(p.line_refs||[]).filter(r=>targetRefs.has(r));const yes=common.length>0;return {type:'boolean',value:yes,text:yes?`YES — shared line: ${common.join(', ')}.`:'NO — no shared U-/S-Bahn line.'};}
+    if(p.question_kind==='directional'){const [lng,lat]=target.geometry.coordinates;const yes=p.axis==='lat'?lat>=Number(p.origin.lat):lng>=Number(p.origin.lng);return {type:'boolean',value:yes,text:`${yes?(p.positive_label||'YES'):(p.negative_label||'NO')}.`};}
     if(p.question_kind==='thermometer'){const from=turf.point([p.from.lng,p.from.lat]),to=turf.point([p.to.lng,p.to.lat]);const df=turf.distance(target,from,{units:'meters'}),dt=turf.distance(target,to,{units:'meters'});const yes=dt<df;return {type:'boolean',value:yes,text:`${yes?'WARMER':'COLDER'} — ${Math.round(df)} m → ${Math.round(dt)} m from the private target.`};}
     if(p.question_kind==='tentacle'){
       const pois=p.pois||[];let best=null,bestD=Infinity;for(const poi of pois){const d=turf.distance(target,turf.point([poi.lng,poi.lat]),{units:'meters'});if(d<bestD){bestD=d;best=poi;}}
@@ -930,20 +963,70 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
   function chooseCastingCost(card){const cost=Number(card.cast_cost_minutes||0);if(cost<=0)return Promise.resolve([]);const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus');if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castModal').classList.remove('hidden');});}
   function closeCastModal(value){$('castModal').classList.add('hidden');const r=state.castResolver;state.castResolver=null;state.castCard=null;r?.(value);}
 
-  async function playHandCard(card){if(card.card_kind==='time_bonus')return toast('Time-bonus cards are held for scoring or casting costs.');if(card.effect_key==='veto_question')return toast('Use the Veto button on a pending question.');if(card.effect_key==='time_trap'){state.trapPlacementCard=card;toast('Tap a station marker on the map to place this Time Trap.');return;}if(card.effect_key==='duplicate'){await useDuplicate(card);return;}const costKeys=await chooseCastingCost(card);if(costKeys===null)return;const duration=card.duration_seconds?`\nA synchronized ${formatDuration(card.duration_seconds)} timer will start.`:'';const extra=card.effect_key==='prosperous_home'?`\nThis implementation doubles the final hiding AREA: 250 m radius → ${(BASE_HIDE_RADIUS_M*Math.sqrt(2)).toFixed(1)} m radius.`:'';const cost=Number(card.cast_cost_minutes||0);const costText=cost?`\nCasting cost: ${cost} min of selected time-bonus cards.`:'';const ok=await confirmAction(`Play ${card.title}?`,`${card.description}${duration}${extra}${costText}`,'Play card');if(!ok)return;const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();}
+  function clearProsperousPreview(){state.mapLayers.prosperousPreview?.remove();state.mapLayers.prosperousPreview=null;}
+  function previewProsperousZone(extraEffects=1){
+    clearProsperousPreview();if(state.role!=='hider'||!state.secret?.station||!state.gameMap)return;
+    const [lng,lat]=state.secret.station.geometry.coordinates;const base=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M);const radius=base*Math.sqrt(currentAreaMultiplier()*Math.pow(2,extraEffects));
+    state.mapLayers.prosperousPreview=L.circle([lat,lng],{radius,color:'#eab308',weight:3,dashArray:'7 6',fillColor:'#fde047',fillOpacity:.10}).addTo(state.gameMap).bindTooltip(`Prosperous Home preview · ${Math.round(radius)} m`);
+  }
 
-  async function useDuplicate(card){const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));if(!targets.length)return toast('Duplicate currently needs another held time bonus or curse card.');const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');const raw=window.prompt(`Choose the card Duplicate should copy:\n${choices}`);if(!raw)return;const idx=Number(raw)-1;if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid Duplicate choice.');const target=targets[idx];let costKeys=[];if(target.card_kind==='curse'){costKeys=await chooseCastingCost(target);if(costKeys===null)return;}const ok=await confirmAction('Use Duplicate?',`Duplicate will copy “${target.title}”. The original remains in your hand; Duplicate is consumed.${Number(target.cast_cost_minutes||0)?`\nCasting cost: ${target.cast_cost_minutes} min.`:''}`,'Use Duplicate');if(!ok)return;const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();}
+  async function playHandCard(card){
+    if(card.card_kind==='time_bonus')return toast('Time bonuses stay in your hand until scoring or casting.');
+    if(card.effect_key==='veto_question')return toast('Use Veto on an open question.');
+    if(card.effect_key==='time_trap'){state.trapPlacementCard=card;toast('Tap a station to place the Time Trap.');return;}
+    if(card.effect_key==='duplicate'){await useDuplicate(card);return;}
+    if(card.effect_key==='reshuffle_deck'){const ok=await confirmAction('Fresh Shuffle?','Reshuffle the discard pile into a new draw pile. Cards in your hand stay out.','Shuffle');if(!ok)return;const {error}=await state.supabase.rpc('use_reshuffle_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();return;}
+    const prosperous=card.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
+    try{
+      const costKeys=await chooseCastingCost(card);if(costKeys===null)return;
+      const cost=Number(card.cast_cost_minutes||0);let msg=card.description||'';
+      if(card.duration_seconds)msg+=`\nDuration: ${formatDuration(card.duration_seconds)}.`;
+      if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}
+      if(cost)msg+=`\nCost: ${cost} min.`;
+      const ok=await confirmAction(`Play ${card.title}?`,msg,'Play');if(!ok)return;
+      const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
+    } finally {if(prosperous)clearProsperousPreview();}
+  }
+
+  async function useDuplicate(card){
+    const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));if(!targets.length)return toast('Duplicate needs another held bonus or curse.');
+    const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');const raw=window.prompt(`Choose a card to copy:\n${choices}`);if(!raw)return;const idx=Number(raw)-1;if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid choice.');const target=targets[idx];
+    const prosperous=target.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
+    try{
+      let costKeys=[];if(target.card_kind==='curse'){costKeys=await chooseCastingCost(target);if(costKeys===null)return;}
+      let msg=`Copy “${target.title}”. The original stays in your hand.`;if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}if(Number(target.cast_cost_minutes||0))msg+=`\nCost: ${target.cast_cost_minutes} min.`;
+      const ok=await confirmAction('Use Duplicate?',msg,'Duplicate');if(!ok)return;
+      const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
+    } finally {if(prosperous)clearProsperousPreview();}
+  }
 
   async function placeTimeTrapAtStation(feature){
-    const card=state.trapPlacementCard;if(!card)return;state.trapPlacementCard=null;const [lng,lat]=feature.geometry.coordinates;const ok=await confirmAction('Place Time Trap here?',`Station: ${feature.properties.stationName}\n\nThe trap placement remains secret from seekers until it is triggered. Its value starts at the card's base bonus and increases by 10 minutes per full hour armed.`,'Place trap');if(!ok)return;
-    const {error}=await state.supabase.rpc('place_time_trap_v3',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_station_name:feature.properties.stationName,p_station_lat:lat,p_station_lng:lng});if(error)throw error;await reloadGameState();
+    const card=state.trapPlacementCard;if(!card)return;state.trapPlacementCard=null;const [lng,lat]=feature.geometry.coordinates;const ok=await confirmAction('Place Time Trap?',`${feature.properties.stationName}\n\nA clock marker will be visible to everyone immediately.`,'Place');if(!ok)return;
+    const {error}=await state.supabase.rpc('place_time_trap_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_station_name:feature.properties.stationName,p_station_lat:lat,p_station_lng:lng});if(error)throw error;await reloadGameState();
   }
   async function triggerTimeTrap(trap,active=true){
-    const verb=active?'Trigger':'Undo trigger';const ok=await confirmAction(`${verb} Time Trap?`,`${trap.station_name}\n${active?'This publishes the trap and its current time bonus to the seekers.':'This removes the triggered bonus from the active score/history; the placement remains secret.'}`,verb,!active);if(!ok)return;
+    const verb=active?'Trigger':'Undo trigger';const ok=await confirmAction(`${verb} Time Trap?`,`${trap.station_name}\n${active?'Its current bonus is added to the final score.':'The bonus is removed; the clock marker stays on the map.'}`,verb,!active);if(!ok)return;
     const {error}=await state.supabase.rpc('set_time_trap_trigger_v3',{p_game_id:state.game.id,p_trap_id:trap.id,p_password:state.hiderPassword,p_active:active});if(error)throw error;await reloadGameState();
   }
 
-  function currentEndgameRadius(){return BASE_HIDE_RADIUS_M*Math.sqrt(currentAreaMultiplier());}
+  function currentEndgameRadius(){return Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier());}
+
+  function publicEndgameRadius(){
+    const zone=latestAction('endgame_zone');if(!zone)return null;const p=zone.payload||{},dynamic=p.dynamic_radius===true;
+    const base=Number(p.base_radius_m)||(dynamic?BASE_HIDE_RADIUS_M:(Number(p.radius_m)||BASE_HIDE_RADIUS_M));return dynamic?base*Math.sqrt(currentAreaMultiplier()):(Number(p.radius_m)||base);
+  }
+  function renderSeekerEndgame(){
+    const panel=$('seekerEndgamePanel');if(!panel)return;panel.classList.toggle('hidden',state.role!=='seeker');if(state.role!=='seeker')return;
+    const zone=latestAction('endgame_zone'),status=$('seekerEndgameStatus'),btn=$('seekerEndgameButton');
+    if(zone?.payload?.center){const r=publicEndgameRadius();status.textContent=`${zone.payload.station_name||'Station'} · ${Math.round(r||BASE_HIDE_RADIUS_M)} m`;btn.textContent='Change Endgame station';}
+    else{status.textContent='Not started';btn.textContent='Start Endgame';}
+  }
+  async function startSeekerEndgameAtStation(feature){
+    if(state.role!=='seeker'||!state.seekerEndgamePickMode)return;state.seekerEndgamePickMode=false;
+    const [lng,lat]=feature.geometry.coordinates,name=feature.properties.stationName||'Station';const radius=BASE_HIDE_RADIUS_M*Math.sqrt(currentAreaMultiplier());
+    const ok=await confirmAction('Start Endgame?',`${name}\nZone radius: ${Math.round(radius)} m\n\nThe map will reset to this station zone.`,`Start Endgame`);if(!ok)return;
+    const {error}=await state.supabase.rpc('start_seeker_endgame_v1',{p_game_id:state.game.id,p_station_name:name,p_station_lat:lat,p_station_lng:lng});if(error)throw error;await reloadGameState();
+  }
 
   function setEndgameCandidate(lat,lng,accuracyM=null,source='map'){
     if(state.role!=='hider'||!state.secret)return;
@@ -968,20 +1051,16 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
   async function toggleEndgame(){
     if(state.role!=='hider')return;
     if(state.secret.endgame){
-      const ok=await confirmAction('Return privately to station phase?',`Automatic answer previews will again use ${state.secret.station_name}.
-
-Seekers receive no phase flag or notification. The stored hiding spot remains private so you can re-enter Endgame later.`,'Undo endgame',true);if(!ok)return;
-      const {error}=await state.supabase.rpc('set_endgame_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:false,p_hidden_lat:null,p_hidden_lng:null});if(error)throw error;await refreshHiderSecret();await reloadGameState();return;
+      const ok=await confirmAction('Undo Endgame?',`${state.secret.station_name} becomes the target again.`,'Undo Endgame',true);if(!ok)return;
+      const {error}=await state.supabase.rpc('set_hider_endgame_target_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:false,p_hidden_lat:null,p_hidden_lng:null});if(error)throw error;await refreshHiderSecret();await reloadGameState();return;
     }
     if(!state.endgameCandidate)return toast('Choose your actual hiding location first, using GPS or a map tap.');
     const d=distanceM(state.endgameCandidate,state.secret.station),limit=currentEndgameRadius();if(d>limit+0.5)return toast(`The hiding spot must be within ${Math.round(limit)} m of the station.`);
     const [lng,lat]=state.endgameCandidate.geometry.coordinates;
-    const ok=await confirmAction('Start Endgame privately?',`Actual hiding spot: ${lat.toFixed(5)}, ${lng.toFixed(5)}
-Distance from ${state.secret.station_name}: ${Math.round(d)} m
-Allowed radius: ${Math.round(limit)} m
-
-From the next question onward, automatic answer previews use this actual location. Seekers receive no phase flag or notification.`,'Enter endgame');if(!ok)return;
-    const {error}=await state.supabase.rpc('set_endgame_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:true,p_hidden_lat:lat,p_hidden_lng:lng});if(error)throw error;clearEndgameCandidate();await refreshHiderSecret();await reloadGameState();
+    const ok=await confirmAction('Start Endgame?',`Hiding spot: ${lat.toFixed(5)}, ${lng.toFixed(5)}
+Distance from station: ${Math.round(d)} m
+Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
+    const {error}=await state.supabase.rpc('set_hider_endgame_target_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_endgame:true,p_hidden_lat:lat,p_hidden_lng:lng});if(error)throw error;clearEndgameCandidate();await refreshHiderSecret();await reloadGameState();
   }
   async function refreshHiderSecret(){if(state.role!=='hider')return;const {data,error}=await state.supabase.rpc('get_hider_game_v4',{p_game_id:state.game.id,p_password:state.hiderPassword});if(error)throw error;const r=data?.[0];if(r)state.secret=secretFromRow(r);}
 
@@ -1019,7 +1098,9 @@ From the next question onward, automatic answer previews use this actual locatio
     let possible=state.mapData.city;
     let phaseStartMs=0;
     if(endgameZone?.payload?.center){
-      const radius=Number(endgameZone.payload.radius_m)||BASE_HIDE_RADIUS_M;
+      const dynamic=endgameZone.payload.dynamic_radius===true;
+      const base=Number(endgameZone.payload.base_radius_m)||(dynamic?BASE_HIDE_RADIUS_M:(Number(endgameZone.payload.radius_m)||BASE_HIDE_RADIUS_M));
+      const radius=dynamic?base*Math.sqrt(currentAreaMultiplier()):(Number(endgameZone.payload.radius_m)||base);
       const center=turf.point([Number(endgameZone.payload.center.lng),Number(endgameZone.payload.center.lat)]);
       const zone=turf.buffer(center,radius/1000,{units:'kilometers',steps:64});
       possible=safeIntersect(state.mapData.city,zone)||zone;
@@ -1040,7 +1121,16 @@ From the next question onward, automatic answer previews use this actual locatio
     if(!possible)return null;const p=q.payload||{};
     if(p.question_kind==='radar'){const c=turf.buffer(turf.point([p.center.lng,p.center.lat]),Number(p.radius_m)/1000,{units:'kilometers',steps:64});return answer?.value?safeIntersect(possible,c):safeDifference(possible,c);}
     if(p.question_kind==='district'){const d=state.mapData.districts.find(x=>x.number===Number(p.district_number));return d?(answer?.value?safeIntersect(possible,d.feature):safeDifference(possible,d.feature)):possible;}
-    if(p.question_kind==='thermometer'){const half=warmerHalfPlane(p.from,p.to,!!answer?.value);return half?safeIntersect(possible,half):possible;}
+    if(p.question_kind==='same_line'){const corridor=sameLineCorridor(p.line_refs||[]);return corridor?(answer?.value?safeIntersect(possible,corridor):safeDifference(possible,corridor)):possible;}
+    if(p.question_kind==='directional'){const half=directionHalfPlane(p.origin,p.axis,!!answer?.value);return half?safeIntersect(possible,half):possible;}
+    if(p.question_kind==='thermometer'){
+      // WARMER keeps the side of the perpendicular bisector containing point B;
+      // COLDER keeps the opposite side. Exactly one half-plane survives.
+      const half=warmerHalfPlane(p.from,p.to,!!answer?.value);
+      if(!half)return possible;
+      const cut=safeIntersect(possible,half);
+      return cut||null;
+    }
     if(p.question_kind==='tentacle'){
       if(answer?.status==='poi'&&answer.poi)return nearestPoiCell(possible,answer.poi,p.pois||[]); return possible;
     }
@@ -1051,38 +1141,62 @@ From the next question onward, automatic answer previews use this actual locatio
   function closerHalfPlane(a,b){
     const A=mercator(a.lat,a.lng),B=mercator(b.lat,b.lng);let nx=A.x-B.x,ny=A.y-B.y;const len=Math.hypot(nx,ny);if(len<1)return null;nx/=len;ny/=len;const tx=-ny,ty=nx,M={x:(A.x+B.x)/2,y:(A.y+B.y)/2},L=120000,D=120000;const pts=[{x:M.x+tx*L,y:M.y+ty*L},{x:M.x-tx*L,y:M.y-ty*L},{x:M.x-tx*L+nx*D,y:M.y-ty*L+ny*D},{x:M.x+tx*L+nx*D,y:M.y+ty*L+ny*D}].map(unmercator);return turf.polygon([[...pts.map(p=>[p.lng,p.lat]),[pts[0].lng,pts[0].lat]]]);
   }
-  function warmerHalfPlane(from,to,yes){const A=mercator(from.lat,from.lng),B=mercator(to.lat,to.lng);let nx=B.x-A.x,ny=B.y-A.y;const len=Math.hypot(nx,ny);if(len<1)return null;nx/=len;ny/=len;if(!yes){nx*=-1;ny*=-1;}const tx=-ny,ty=nx,M={x:(A.x+B.x)/2,y:(A.y+B.y)/2},L=120000,D=120000;const pts=[{x:M.x+tx*L,y:M.y+ty*L},{x:M.x-tx*L,y:M.y-ty*L},{x:M.x-tx*L+nx*D,y:M.y-ty*L+ny*D},{x:M.x+tx*L+nx*D,y:M.y+ty*L+ny*D}].map(unmercator);return turf.polygon([[...pts.map(p=>[p.lng,p.lat]),[pts[0].lng,pts[0].lat]]]);}
+  function halfPlanePolygon(M,nx,ny){
+    const len=Math.hypot(nx,ny);if(len<1)return null;nx/=len;ny/=len;const tx=-ny,ty=nx;
+    // Far larger than Vienna so clipping is stable even after many deductions.
+    const L=1000000,D=1000000;
+    const pts=[{x:M.x+tx*L,y:M.y+ty*L},{x:M.x-tx*L,y:M.y-ty*L},{x:M.x-tx*L+nx*D,y:M.y-ty*L+ny*D},{x:M.x+tx*L+nx*D,y:M.y+ty*L+ny*D}].map(unmercator);
+    return turf.polygon([[...pts.map(p=>[p.lng,p.lat]),[pts[0].lng,pts[0].lat]]]);
+  }
+  function warmerHalfPlane(from,to,warmer){
+    const A=mercator(from.lat,from.lng),B=mercator(to.lat,to.lng),M={x:(A.x+B.x)/2,y:(A.y+B.y)/2};
+    let nx=B.x-A.x,ny=B.y-A.y;if(!warmer){nx*=-1;ny*=-1;}return halfPlanePolygon(M,nx,ny);
+  }
+  function directionHalfPlane(origin,axis,positive){
+    if(!origin)return null;const M=mercator(Number(origin.lat),Number(origin.lng));
+    if(axis==='lat')return halfPlanePolygon(M,0,positive?1:-1);
+    return halfPlanePolygon(M,positive?1:-1,0);
+  }
   function mercator(lat,lng){const R=6378137;return{x:R*lng*Math.PI/180,y:R*Math.log(Math.tan(Math.PI/4+lat*Math.PI/360))};}
   function unmercator(p){const R=6378137;return{lng:p.x/R*180/Math.PI,lat:(2*Math.atan(Math.exp(p.y/R))-Math.PI/2)*180/Math.PI};}
 
   function renderPossibleArea(){
     state.mapLayers.possible?.remove();state.mapLayers.excluded?.remove();if(state.possibleArea){state.mapLayers.possible=L.geoJSON(state.possibleArea,{style:mapGeoStyle('possible'),interactive:false}).addTo(state.gameMap);const ex=safeDifference(state.mapData.city,state.possibleArea);if(ex)state.mapLayers.excluded=L.geoJSON(ex,{style:mapGeoStyle('excluded'),interactive:false}).addTo(state.gameMap);const km2=turf.area(state.possibleArea)/1e6;$('remainingAreaText').textContent=`${km2.toFixed(km2>=10?1:2)} km² possible`;}else{$('remainingAreaText').textContent='0 km² possible';}
-    state.mapLayers['game-rails']?.bringToFront?.();state.mapLayers['game-stations']?.bringToFront?.();
+    renderPublicEndgameZone();renderPublicTimeTraps();
+    state.mapLayers['game-rails']?.bringToFront?.();state.mapLayers['game-stations']?.bringToFront?.();state.mapLayers.publicTimeTraps?.bringToFront?.();
   }
 
-  function clearPrivateMapLayers(){['hiderStation','hiderSpot','hiderZone','seekerLive','seekerLiveAccuracy'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});}
+  function renderPublicEndgameZone(){
+    state.mapLayers.publicEndgameZone?.remove();state.mapLayers.publicEndgameZone=null;
+    const zone=latestAction('endgame_zone');if(!zone?.payload?.center)return;
+    const dynamic=zone.payload.dynamic_radius===true,base=Number(zone.payload.base_radius_m)||(dynamic?BASE_HIDE_RADIUS_M:(Number(zone.payload.radius_m)||BASE_HIDE_RADIUS_M));
+    const radius=dynamic?base*Math.sqrt(currentAreaMultiplier()):(Number(zone.payload.radius_m)||base);
+    state.mapLayers.publicEndgameZone=L.circle([Number(zone.payload.center.lat),Number(zone.payload.center.lng)],{radius,color:'#16a34a',weight:2,fillColor:'#22c55e',fillOpacity:.08}).addTo(state.gameMap).bindTooltip(`Endgame zone · ${Math.round(radius)} m`);
+  }
+
+  function clearPrivateMapLayers(){['hiderStation','hiderSpot','hiderZone','prosperousPreview','seekerLive','seekerLiveAccuracy'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});}
   function renderSeekerLiveForHider(){state.mapLayers.seekerLive?.remove();state.mapLayers.seekerLiveAccuracy?.remove();state.mapLayers.seekerLive=null;state.mapLayers.seekerLiveAccuracy=null;const el=$('hiderSeekerLiveStatus');if(!el)return;if(state.role!=='hider'||!state.seekerLivePosition){el.textContent='No seeker GPS position has been published yet.';return;}const p=state.seekerLivePosition;const age=Math.max(0,Math.round((serverNowMs()-new Date(p.updated_at).getTime())/60000));el.textContent=`${Number(p.lat).toFixed(5)}, ${Number(p.lng).toFixed(5)} · GPS ±${Math.round(Number(p.accuracy_m||0))} m · updated ${age} min ago`;state.mapLayers.seekerLive=L.marker([Number(p.lat),Number(p.lng)],{icon:L.divIcon({className:'seeker-live-marker',html:'<span>S</span>',iconSize:[24,24]})}).addTo(state.gameMap).bindTooltip('Latest seeker GPS');if(Number(p.accuracy_m)>0)state.mapLayers.seekerLiveAccuracy=L.circle([Number(p.lat),Number(p.lng)],{radius:Number(p.accuracy_m),color:'#0f766e',weight:1,dashArray:'4 4',fillOpacity:.04}).addTo(state.gameMap);}
 
   function renderHiderSecret(){
     ['hiderStation','hiderSpot','hiderZone'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
     if(state.role!=='hider'||!state.secret)return;
     const [slng,slat]=state.secret.station.geometry.coordinates;const phase=state.secret.endgame?'<span class="phase-endgame">ENDGAME / actual spot</span>':'<span class="phase-station">STATION PHASE</span>';
-    const hiddenText=state.secret.endgame&&state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Actual spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'<br>Final hiding coordinate is not needed until you decide the seekers have reached the correct station.';
+    const hiddenText=state.secret.endgame&&state.secret.hidden?(()=>{const [hlng,hlat]=state.secret.hidden.geometry.coordinates;return `<br>Hiding spot: ${hlat.toFixed(5)}, ${hlng.toFixed(5)} · ${Math.round(distanceM(state.secret.station,state.secret.hidden))} m from station.`;})():'';
     $('hiderSecretStatus').innerHTML=`${phase}<br><strong>${escapeHtml(state.secret.station_name)}</strong> · ${slat.toFixed(5)}, ${slng.toFixed(5)}${hiddenText}`;
     const prep=$('prepareEndgameButton'),controls=$('endgameLocationControls'),toggle=$('toggleEndgameButton');
     if(state.secret.endgame){
-      prep?.classList.add('hidden');controls?.classList.add('hidden');toggle?.classList.remove('hidden');toggle.textContent='Undo endgame: use station again';
+      prep?.classList.add('hidden');controls?.classList.add('hidden');toggle?.classList.remove('hidden');toggle.textContent='Undo Endgame';
     }else if(state.endgamePrepareMode){
-      prep?.classList.add('hidden');controls?.classList.remove('hidden');toggle?.classList.remove('hidden');toggle.textContent='Start private endgame with selected spot';
+      prep?.classList.add('hidden');controls?.classList.remove('hidden');toggle?.classList.remove('hidden');toggle.textContent='Start Endgame';
     }else{
       prep?.classList.remove('hidden');controls?.classList.add('hidden');toggle?.classList.add('hidden');
     }
     state.mapLayers.hiderStation?.remove();state.mapLayers.hiderSpot?.remove();state.mapLayers.hiderZone?.remove();
     state.mapLayers.hiderStation=L.marker([slat,slng],{icon:L.divIcon({className:'station-selected',iconSize:[18,18]})}).addTo(state.gameMap).bindTooltip(`Private station: ${state.secret.station_name}`);
-    if(state.secret.hidden){const [hlng,hlat]=state.secret.hidden.geometry.coordinates;state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Private actual hiding spot');}
-    if(state.secret.endgame||state.endgamePrepareMode){
-      const r=currentEndgameRadius();state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#7c3aed',weight:2,dashArray:'5 4',fillOpacity:.04}).addTo(state.gameMap);
-    }
+    if(state.secret.hidden){const [hlng,hlat]=state.secret.hidden.geometry.coordinates;state.mapLayers.hiderSpot=L.marker([hlat,hlng]).addTo(state.gameMap).bindTooltip('Actual hiding spot');}
+    const r=currentEndgameRadius();
+    state.mapLayers.hiderZone=L.circle([slat,slng],{radius:r,color:'#16a34a',weight:2,fillColor:'#22c55e',fillOpacity:.10}).addTo(state.gameMap).bindTooltip(`Hiding zone · ${Math.round(r)} m`);
+    $('hiderSecretStatus').insertAdjacentHTML('beforeend',`<br><strong>Hiding zone: ${Math.round(r)} m</strong>`);
   }
 
   function thermometerProgress(card){
@@ -1096,7 +1210,7 @@ From the next question onward, automatic answer previews use this actual locatio
     $('questionDeck').innerHTML=groups.map(([key,label])=>{
       const cards=QUESTION_CARDS.filter(c=>c.category===key);if(!cards.length)return'';
       const html=cards.map(c=>{
-        const isUsed=used.has(c.slot),disabled=state.role!=='seeker'||isUsed,preview=state.previewQuestionSlot===c.slot;let extra='',qstate=isUsed?'Asked':(state.role==='seeker'?'Available':'Not asked');
+        const isUsed=used.has(c.slot),disabled=state.role!=='seeker'||isUsed||state.game?.status==='finished',preview=state.previewQuestionSlot===c.slot;let extra='',qstate=isUsed?'Asked':(state.role==='seeker'?'Available':'Not asked');
         if(c.kind==='thermometer'&&!isUsed){const prog=thermometerProgress(c);if(prog){if(state.role==='seeker'&&prog.ready){extra='thermo-ready';qstate=`Ready · moved ${Math.round(prog.travelled)} m`; }else{extra='thermo-armed';qstate=state.role==='seeker'&&Number.isFinite(prog.travelled)?`Armed · ${Math.round(prog.travelled)}/${c.min_travel_m} m`:'Armed';}}}
         if(preview)extra+=` preview-active`;
         return `<button class="question-card-button ${isUsed?'used':''} ${state.role==='hider'?'hider-view':''} ${extra}" data-question-slot="${c.slot}" ${disabled?'disabled':''}><div><div class="q-category">${escapeHtml(c.category)}</div><div class="q-title">${escapeHtml(c.title)}</div><div class="q-detail">${escapeHtml(c.detail)}</div></div><div class="q-state">${escapeHtml(qstate)}</div></button>`;
@@ -1131,23 +1245,33 @@ From the next question onward, automatic answer previews use this actual locatio
   }
 
   function renderPendingQuestions(){
+    const pending=effectiveActions('question').filter(q=>!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));
+    if($('pendingQuestionCount'))$('pendingQuestionCount').textContent=pending.length?`${pending.length} open`:'None';
+    if(!pending.length){$('pendingQuestions').innerHTML='<div class="mini-status">No ongoing questions.</div>';return;}
+    if(state.role==='seeker'){
+      $('pendingQuestions').innerHTML=pending.map((q,i)=>`<div class="question-item"><div class="row-between pending-question-head"><strong>Question ${i+1} · ${escapeHtml(activityQuestionName(q))}</strong><span class="answer-pill pending">Waiting</span></div><div class="meta">${new Date(q.created_at).toLocaleTimeString()}</div></div>`).join('');
+      return;
+    }
     if(state.role!=='hider')return;
-    const pending=effectiveActions('question').filter(q=>!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const hasVeto=availableHandCards('veto_question').length>0;
-    $('pendingQuestions').innerHTML=pending.length?pending.map(q=>{
+    const hasVeto=availableHandCards('veto_question').length>0;
+    $('pendingQuestions').innerHTML=pending.map(q=>{
       const kind=q.payload?.question_kind,s=kind==='photo'?null:suggestedAnswer(q);let controls='';
       if(kind==='tentacle'){
-        if(s?.status==='auto_veto')controls=`<button class="danger full" data-auto-veto-tentacle="${q.id}">Confirm automatic Tentacle veto</button>`;
-        else controls=`<button class="primary full" data-send-tentacle="${q.id}">Send “Hider is closest to ${escapeHtml(s?.poi?.name||'…')}”</button>`;
+        if(s?.status==='auto_veto')controls=`<button class="danger full" data-auto-veto-tentacle="${q.id}">Confirm automatic veto</button>`;
+        else controls=`<button class="primary full" data-send-tentacle="${q.id}">Closest to ${escapeHtml(s?.poi?.name||'…')}</button>`;
       }else if(kind==='photo'){
         const existing=state.photoPreviewUrls.get(q.id)||'';
-        controls=`<div class="photo-answer-box"><label class="photo-file-label">Choose photo<input type="file" accept="image/*" data-photo-input="${q.id}"></label><div class="photo-local-preview ${existing?'':'hidden'}" data-photo-preview-wrap="${q.id}"><img data-photo-preview="${q.id}" ${existing?`src="${escapeHtml(existing)}"`:''} alt="Selected photo preview"></div><button class="primary full" data-send-photo="${q.id}" ${state.photoFiles.has(q.id)?'':'disabled'}>Upload & send photo</button></div>`;
+        controls=`<div class="photo-answer-box"><label class="photo-file-label">Choose photo<input type="file" accept="image/*" data-photo-input="${q.id}"></label><div class="photo-local-preview ${existing?'':'hidden'}" data-photo-preview-wrap="${q.id}"><img data-photo-preview="${q.id}" ${existing?`src="${escapeHtml(existing)}"`:''} alt="Selected photo preview"></div><button class="primary full" data-send-photo="${q.id}" ${state.photoFiles.has(q.id)?'':'disabled'}>Send photo</button></div>`;
       }else{
-        const yesLabel=kind==='thermometer'?'Warmer':'Yes',noLabel=kind==='thermometer'?'Colder':'No';
-        controls=`<div class="answer-row"><button class="primary answer-yes" data-answer-question="${q.id}" data-answer-value="true">${yesLabel}</button><button class="primary answer-no" data-answer-question="${q.id}" data-answer-value="false">${noLabel}</button></div>`;
+        let yesLabel='Yes',noLabel='No';
+        if(kind==='thermometer'){yesLabel='Warmer';noLabel='Colder';}
+        if(kind==='radar'){yesLabel='Hit';noLabel='Miss';}
+        if(kind==='directional'){yesLabel=q.payload?.positive_label||'Yes';noLabel=q.payload?.negative_label||'No';}
+        controls=`<div class="answer-row"><button class="primary answer-yes" data-answer-question="${q.id}" data-answer-value="true">${escapeHtml(yesLabel)}</button><button class="primary answer-no" data-answer-question="${q.id}" data-answer-value="false">${escapeHtml(noLabel)}</button></div>`;
       }
-      const suggestion=kind==='photo'?`<div class="suggestion photo-request"><strong>Photo request</strong>${escapeHtml(q.payload?.photo_prompt||q.payload?.title||'Photo')}</div>`:`<div class="suggestion"><strong>Automatic private preview</strong>${escapeHtml(s?.text||'Could not calculate.')}</div>`;
-      return `<div class="question-item"><div class="row-between pending-question-head"><strong>${escapeHtml(questionLabel(q))}</strong><span data-question-deadline="${q.id}" class="answer-deadline"></span></div><div class="meta">Asked ${new Date(q.created_at).toLocaleString()}</div>${suggestion}${kind==='tentacle'?`<div class="tentacle-summary">${(q.payload.pois||[]).length} candidate POIs from the remaining zone. Valid only if the private target is within ${Number(q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of at least one.</div>`:''}${controls}${hasVeto?`<button class="danger tiny activity-undo" data-veto-question="${q.id}">Use Veto Question</button>`:''}</div>`;
-    }).join(''):'<div class="mini-status">Nothing waiting for an answer.</div>';
+      const suggestion=kind==='photo'?`<div class="suggestion photo-request"><strong>Photo</strong>${escapeHtml(q.payload?.photo_prompt||q.payload?.title||'Photo')}</div>`:`<div class="suggestion"><strong>Preview</strong>${escapeHtml(s?.text||'Could not calculate.')}</div>`;
+      return `<div class="question-item"><div class="row-between pending-question-head"><strong>${escapeHtml(activityQuestionName(q))}</strong><span data-question-deadline="${q.id}" class="answer-deadline"></span></div>${suggestion}${controls}${hasVeto?`<button class="danger tiny activity-undo" data-veto-question="${q.id}">Veto</button>`:''}</div>`;
+    }).join('');
     renderAnswerDeadlines();
     $('pendingQuestions').querySelectorAll('[data-answer-question]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.answerQuestion);if(q)answerBoolean(q,b.dataset.answerValue==='true').catch(handleError);}));
     $('pendingQuestions').querySelectorAll('[data-send-tentacle]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.sendTentacle);if(q)answerTentacle(q).catch(handleError);}));
@@ -1167,12 +1291,22 @@ From the next question onward, automatic answer previews use this actual locatio
     $('curseDraws').querySelectorAll('[data-keep-card]').forEach(b=>b.addEventListener('click',()=>{const d=state.hiderDraws.find(x=>x.id===b.dataset.drawId);if(d)toggleKeepCard(d,b.dataset.keepCard,true).catch(handleError);}));$('curseDraws').querySelectorAll('[data-play-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.playCard);if(c)playHandCard(c).catch(handleError);}));$('curseDraws').querySelectorAll('[data-discard-card]').forEach(b=>b.addEventListener('click',()=>{const c=availableHandCards().find(x=>x.card_key===b.dataset.discardCard);if(c)discardHeldCard(c).catch(handleError);}));
   }
 
+  function renderPublicTimeTraps(){
+    state.mapLayers.publicTimeTraps?.remove();state.mapLayers.publicTimeTraps=null;
+    const placements=effectiveActions('time_trap_place');if(!placements.length||!state.gameMap)return;
+    const triggered=new Set(effectiveActions('time_trap_trigger').map(a=>String(a.payload?.trap_id||'')));
+    const group=L.layerGroup();
+    placements.forEach(a=>{const p=a.payload||{},lat=Number(p.lat),lng=Number(p.lng);if(!Number.isFinite(lat)||!Number.isFinite(lng))return;const isTriggered=triggered.has(String(p.trap_id||''));const icon=L.divIcon({className:`time-trap-map ${isTriggered?'triggered':''}`,html:'<span>⏱</span>',iconSize:[26,26],iconAnchor:[13,13]});L.marker([lat,lng],{icon}).bindTooltip(`Time Trap · ${p.station_name||'Station'}${isTriggered?' · triggered':''}`).addTo(group);});
+    group.addTo(state.gameMap);state.mapLayers.publicTimeTraps=group;
+  }
+
   function renderTimeTraps(){
     if(state.role!=='hider')return;$('timeTraps').innerHTML=state.timeTraps.length?state.timeTraps.map(t=>`<div class="question-item ${t.trigger_active?'time-trap-triggered':'time-trap-armed'}"><strong>${escapeHtml(t.station_name)}</strong><div class="meta">Armed ${new Date(t.armed_at).toLocaleString()} · current value ${Number(t.current_bonus_minutes||t.bonus_minutes||0)} min</div><button class="${t.trigger_active?'secondary':'primary'} small full" data-trigger-trap="${t.id}" data-trap-active="${t.trigger_active?'false':'true'}">${t.trigger_active?'Undo trigger':'Trigger now'}</button></div>`).join(''):'<div class="mini-status">No Time Traps placed.</div>';
     $('timeTraps').querySelectorAll('[data-trigger-trap]').forEach(b=>b.addEventListener('click',()=>{const t=state.timeTraps.find(x=>x.id===b.dataset.triggerTrap);if(t)triggerTimeTrap(t,b.dataset.trapActive==='true').catch(handleError);}));
   }
 
-  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route']);
+  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op']);
+  const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op']);
   function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){}}
   function playCurseSound(){
     try{
@@ -1181,7 +1315,7 @@ From the next question onward, automatic answer previews use this actual locatio
     }catch(e){console.warn('Curse sound unavailable',e);}
   }
   function renderActiveCurses(){
-    const now=serverNowMs();const all=effectiveActions().filter(a=>['curse_play','time_trap_trigger','question_veto'].includes(a.kind));const visible=all.filter(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;return !end||end>now;}).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    const now=serverNowMs();const all=effectiveActions().filter(a=>['curse_play','time_trap_trigger','question_veto'].includes(a.kind));const visible=all.filter(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;if(end)return end>now;if(a.kind==='curse_play'&&ONE_QUESTION_CURSES.has(a.payload?.effect_key)){const t=new Date(a.created_at).getTime();return !effectiveActions('question').some(q=>q.actor==='seeker'&&new Date(q.created_at).getTime()>t);}return true;}).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
     $('activeCurses').innerHTML=visible.length?visible.map(a=>{if(a.kind==='question_veto')return `<div class="curse-item"><strong>${a.payload?.automatic_tentacle?'Tentacle automatically vetoed':'Question vetoed'}</strong><div class="meta">${escapeHtml(a.payload?.question_title||'A question')} ${a.payload?.automatic_tentacle?`had no qualifying option within ${Number(a.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M)} m of the hider target.`:'was vetoed.'}</div></div>`;if(a.kind==='time_trap_trigger')return `<div class="curse-item"><strong>Time Trap triggered</strong><div class="meta">${escapeHtml(a.payload?.station_name||'Station')} · +${Number(a.payload?.bonus_minutes||0)} min</div></div>`;const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-item curse-active"><strong>${escapeHtml(a.payload?.title||'Card')}</strong><div class="meta">${escapeHtml(a.payload?.description||'')}</div><div class="curse-countdown">${rem===null?'ACTIVE':formatCountdown(rem)}</div></div>`;}).join(''):'<div class="mini-status">No public card effect is active.</div>';
 
     const strip=$('seekerCurseStrip');if(!strip)return;
@@ -1196,11 +1330,12 @@ From the next question onward, automatic answer previews use this actual locatio
     }
   }
 
-  function canToggleAction(a){if(a.kind==='time_trap_trigger'||a.kind==='endgame_zone')return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
+  function canToggleAction(a){if(['time_trap_place','time_trap_trigger','endgame_zone','game_finish'].includes(a.kind))return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
   function activityQuestionName(q){
     const p=q.payload||{};
     if(p.question_kind==='district')return `District = ${p.district_name||p.district_number||'?'}`;
     if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar`;
+    if(p.question_kind==='same_line')return `Same Line · ${p.seeker_station_name||'rail station'}`;
     if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer`;
     if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle`;
     if(p.question_kind==='photo')return `Photo – ${p.photo_prompt||p.title||'Photo'}`;
@@ -1216,7 +1351,9 @@ From the next question onward, automatic answer previews use this actual locatio
     const a=r.payload?.answer||{};
     if(a.type==='photo'&&a.photo_path)return `<button class="activity-photo-thumb" data-photo-path="${escapeHtml(a.photo_path)}" data-photo-title="${escapeHtml(q.payload?.photo_prompt||'Photo answer')}"><img alt="Photo thumbnail"><span>Photo</span></button>`;
     if(q.payload?.question_kind==='thermometer'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Warmer':'Colder'}</span>`;
-    if(a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'True':'False'}</span>`;
+    if(q.payload?.question_kind==='radar'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Hit':'Miss'}</span>`;
+    if(q.payload?.question_kind==='directional'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${escapeHtml(a.value?(q.payload?.positive_label||'Yes'):(q.payload?.negative_label||'No'))}</span>`;
+    if(a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Yes':'No'}</span>`;
     if(a.type==='tentacle'&&a.status==='poi')return `<span class="activity-resolution yes">Closest to ${escapeHtml(a.poi?.name||'POI')}</span>`;
     return '<span class="activity-resolution">Answered</span>';
   }
@@ -1224,11 +1361,12 @@ From the next question onward, automatic answer previews use this actual locatio
     const entries=[
       ...state.actions.filter(a=>a.kind==='question').map(q=>({type:'question',at:q.created_at,q})),
       ...state.actions.filter(a=>!['question','answer','question_veto','thermo_reference','endgame_zone'].includes(a.kind)).map(a=>({type:'action',at:a.created_at,a}))
-    ].sort((x,y)=>new Date(y.at)-new Date(x.at));
+    ].sort((x,y)=>new Date(x.at)-new Date(y.at));
+    const orderedQuestions=state.actions.filter(a=>a.kind==='question').sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)),questionNumber=new Map(orderedQuestions.map((q,i)=>[q.id,i+1]));
     $('activityHistory').innerHTML=entries.length?entries.map(entry=>{
       if(entry.type==='question'){
         const q=entry.q,r=rawResolutionForQuestion(q.id),pen=Number(r?.payload?.late_penalty_minutes||0),qEffective=isActionEffective(q),rEffective=r?isActionEffective(r):false;
-        return `<div class="activity-item grouped ${qEffective?'':'inactive'}"><div class="activity-question-line"><strong>Question – ${escapeHtml(activityQuestionName(q))}</strong>${!qEffective?' <span class="answer-pill undone">UNDONE</span>':''}${activityResolutionMarkup(q,r)}</div><div class="meta">${new Date(q.created_at).toLocaleString()}${r?` · resolved ${new Date(r.created_at).toLocaleTimeString()}${!rEffective?' · resolution undone':''}`:''}${pen?` · <strong>−${pen} min late penalty</strong>`:''}</div><div class="activity-actions compact">${canToggleAction(q)?`<button class="${q.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${q.id}" data-active="${q.is_active?'false':'true'}">${q.is_active?'Undo question':'Redo question'}</button>`:''}${r&&canToggleAction(r)?`<button class="${r.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${r.id}" data-active="${r.is_active?'false':'true'}">${r.is_active?'Undo answer':'Redo answer'}</button>`:''}</div></div>`;
+        return `<div class="activity-item grouped ${qEffective?'':'inactive'}"><div class="activity-question-line"><strong>Question ${questionNumber.get(q.id)||'?'} – ${escapeHtml(activityQuestionName(q))}</strong>${!qEffective?' <span class="answer-pill undone">UNDONE</span>':''}${activityResolutionMarkup(q,r)}</div><div class="meta">${new Date(q.created_at).toLocaleString()}${r?` · resolved ${new Date(r.created_at).toLocaleTimeString()}${!rEffective?' · resolution undone':''}`:''}${pen?` · <strong>−${pen} min late penalty</strong>`:''}</div><div class="activity-actions compact">${canToggleAction(q)?`<button class="${q.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${q.id}" data-active="${q.is_active?'false':'true'}">${q.is_active?'Undo question':'Redo question'}</button>`:''}${r&&canToggleAction(r)?`<button class="${r.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${r.id}" data-active="${r.is_active?'false':'true'}">${r.is_active?'Undo answer':'Redo answer'}</button>`:''}</div></div>`;
       }
       const a=entry.a;return `<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions compact"><button class="${a.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`;
     }).join(''):'<div class="mini-status">No game activity yet.</div>';
@@ -1236,22 +1374,37 @@ From the next question onward, automatic answer previews use this actual locatio
     hydratePhotoMedia().catch(e=>console.warn(e));
   }
 
-  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderGameClock();}
+  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderSeekerEndgame();renderGameClock();}
 
-  function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} options in remaining zone`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
+  function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='same_line')return `Same Line from ${p.seeker_station_name||'rail station'} (${(p.line_refs||[]).join(', ')})`;if(p.question_kind==='directional')return p.title||'Direction';if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} options in remaining zone`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
   function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
-  function actionLabel(a){const p=a.payload||{};if(a.kind==='question')return `Question · ${questionLabel(a)}`;if(a.kind==='answer'){const q=state.actions.find(x=>x.id===a.parent_id);return `Answer · ${q?questionLabel(q):'question'} · ${answerLabel(p.answer)}`;}if(a.kind==='thermo_reference')return `Thermometer start · ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`;if(a.kind==='curse_play')return `Card played · ${p.title||p.card_key||'Curse'}`;if(a.kind==='question_veto')return `${p.automatic_tentacle?'Automatic Tentacle veto':'Veto'} · ${p.question_title||'Question'}`;if(a.kind==='time_trap_trigger')return `Time Trap · ${p.station_name} · +${p.bonus_minutes} min`;return a.kind;}
+  function actionLabel(a){const p=a.payload||{};if(a.kind==='question')return `Question · ${questionLabel(a)}`;if(a.kind==='answer'){const q=state.actions.find(x=>x.id===a.parent_id);return `Answer · ${q?questionLabel(q):'question'} · ${answerLabel(p.answer)}`;}if(a.kind==='thermo_reference')return `Thermometer start · ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`;if(a.kind==='curse_play')return `Card played · ${p.title||p.card_key||'Curse'}`;if(a.kind==='question_veto')return `${p.automatic_tentacle?'Automatic Tentacle veto':'Veto'} · ${p.question_title||'Question'}`;if(a.kind==='time_trap_place')return `Time Trap placed · ${p.station_name||'Station'}`;if(a.kind==='time_trap_trigger')return `Time Trap triggered · ${p.station_name} · +${p.bonus_minutes} min`;if(a.kind==='game_finish')return `Hider Found · final ${formatCountdown(Number(p.final_seconds||0))}`;return a.kind;}
   function formatDistance(m){return Number(m)>=1000?`${Number(m)/1000} km`:`${Number(m)} m`;}
   function formatCoord(p){return p?`${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`:'?';}
   function gameClockSeconds(){if(!state.game)return 0;let sec=Number(state.game.clock_elapsed_seconds||0);if(state.game.clock_running&&state.game.clock_started_at)sec+=Math.max(0,(serverNowMs()-new Date(state.game.clock_started_at).getTime())/1000);return Math.floor(sec);}
   function answerPenaltyTotal(){return effectiveActions().filter(a=>['answer','question_veto'].includes(a.kind)).reduce((sum,a)=>sum+Number(a.payload?.late_penalty_minutes||0),0);}
-  function renderGameClock(){const el=$('gameClockDisplay');if(!el||!state.game)return;const raw=gameClockSeconds(),pen=answerPenaltyTotal();el.textContent=formatCountdown(raw);el.classList.toggle('running',!!state.game.clock_running);const meta=$('gameScoreMeta');if(meta)meta.textContent=pen?`answer penalties −${pen} min · adjusted ${formatCountdown(Math.max(0,raw-pen*60))}`:'';const controls=$('gameClockControls');if(controls)controls.classList.toggle('hidden',state.role!=='hider');const start=$('startGameClockButton'),pause=$('pauseGameClockButton');if(start){start.textContent=Number(state.game.clock_elapsed_seconds||0)>0?'Resume game time':'Start game time';start.disabled=!!state.game.clock_running;}if(pause)pause.disabled=!state.game.clock_running;const status=$('gameClockStatus');if(status)status.textContent=state.game.clock_running?'Running · synchronized':'Paused';}
-  async function setGameClock(action){const title=action==='pause'?'Pause game time?':(Number(state.game.clock_elapsed_seconds||0)>0?'Resume game time?':'Start game time?');const ok=await confirmAction(title,action==='pause'?'The shared game timer will stop at its current elapsed time.':'The shared game timer will begin/resume for both Hider and Seekers.',action==='pause'?'Pause':'Start');if(!ok)return;const {error}=await state.supabase.rpc('set_game_clock_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_action:action});if(error)throw error;await reloadGameState();}
+  function renderGameClock(){
+    const el=$('gameClockDisplay');if(!el||!state.game)return;const finished=state.game.status==='finished';
+    const raw=finished?Number(state.game.final_raw_seconds??state.game.clock_elapsed_seconds??0):gameClockSeconds();
+    const final=finished?Number(state.game.final_score_seconds??raw):raw;el.textContent=formatCountdown(final);el.classList.toggle('running',!finished&&!!state.game.clock_running);
+    const meta=$('gameScoreMeta');if(meta)meta.textContent=finished?`Raw ${formatCountdown(raw)} · +${Number(state.game.final_bonus_minutes||0)} cards · +${Number(state.game.final_trap_minutes||0)} traps · −${Number(state.game.final_penalty_minutes||0)} penalties`:'';
+    const controls=$('gameClockControls');if(controls)controls.classList.toggle('hidden',state.role!=='hider'||finished);
+    const start=$('startGameClockButton'),pause=$('pauseGameClockButton');if(start){start.textContent=Number(state.game.clock_elapsed_seconds||0)>0?'Resume':'Start';start.disabled=!!state.game.clock_running;}if(pause)pause.disabled=!state.game.clock_running;
+    const status=$('gameClockStatus');if(status)status.textContent=state.game.clock_running?'Running':'Paused';
+    const found=$('hiderFoundButton'),summary=$('finalScoreSummary');if(found){found.disabled=finished;found.textContent=finished?'Game Finished':'Hider Found';}
+    if(summary){if(finished){summary.classList.remove('hidden');summary.innerHTML=`<strong>Final time: ${formatCountdown(final)}</strong><span>Raw ${formatCountdown(raw)} · Cards +${Number(state.game.final_bonus_minutes||0)} min · Traps +${Number(state.game.final_trap_minutes||0)} min · Penalties −${Number(state.game.final_penalty_minutes||0)} min</span>`;}else{summary.classList.add('hidden');summary.innerHTML='';}}
+  }
+  async function setGameClock(action){const title=action==='pause'?'Pause clock?':(Number(state.game.clock_elapsed_seconds||0)>0?'Resume clock?':'Start clock?');const ok=await confirmAction(title,'',action==='pause'?'Pause':'Start');if(!ok)return;const {error}=await state.supabase.rpc('set_game_clock_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_action:action});if(error)throw error;await reloadGameState();}
+  async function finishGame(){
+    if(!state.game||state.game.status==='finished')return;const ok=await confirmAction('Hider Found?','End the game and calculate the final time from held bonuses, triggered Time Traps, and answer penalties.','End Game',true);if(!ok)return;
+    const {error}=await state.supabase.rpc('finish_game_v1',{p_game_id:state.game.id,p_actor:state.role,p_password:state.role==='hider'?state.hiderPassword:null});if(error)throw error;await reloadGameState();
+  }
+
 
   function formatDuration(s){s=Number(s)||0;if(s%3600===0&&s>=3600)return`${s/3600} h`;if(s%60===0)return`${s/60} min`;return`${s} sec`;}
   function formatCountdown(s){s=Math.max(0,Math.floor(s));const h=Math.floor(s/3600),m=Math.floor((s%3600)/60),sec=s%60;return h?`${h}:${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`:`${m}:${String(sec).padStart(2,'0')}`;}
 
-  async function syncServerClock(){try{const before=Date.now();const {data,error}=await state.supabase.rpc('server_now');const after=Date.now();if(error)throw error;state.serverOffsetMs=new Date(data).getTime()-(before+after)/2;$('serverClockStatus').textContent='server-synced';}catch(_){state.serverOffsetMs=0;$('serverClockStatus').textContent='device clock';}}
+  async function syncServerClock(){try{const before=Date.now();const {data,error}=await state.supabase.rpc('server_now');const after=Date.now();if(error)throw error;state.serverOffsetMs=new Date(data).getTime()-(before+after)/2;$('serverClockStatus').textContent='Synced';}catch(_){state.serverOffsetMs=0;$('serverClockStatus').textContent='Local clock';}}
   function serverNowMs(){return Date.now()+state.serverOffsetMs;}
   function startTimers(){clearInterval(state.timerId);state.timerId=setInterval(()=>{if(state.game){renderActiveCurses();renderTimeTraps();renderGameClock();renderAnswerDeadlines();if(state.role==='hider')renderSeekerLiveForHider();if(state.role==='seeker')renderQuestionDeck();}},1000);}
 
@@ -1480,7 +1633,7 @@ ${failures.join('\n')}`,9000);
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
   function openDeveloper(){state.developerPassword=null;$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
@@ -1490,7 +1643,7 @@ ${failures.join('\n')}`,9000);
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
     $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
     document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Fresh GPS for each question':'Use the current/manual map marker';if(state.seekerOriginMode==='map')beginManualCurrentPosition();}));
-    $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{stopGpsAutoTracking();state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';renderQuestionDeck();});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your actual hiding spot with GPS or on the map, then start Endgame.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your private final hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));$('startGameClockButton').addEventListener('click',()=>setGameClock('start').catch(handleError));$('pauseGameClockButton').addEventListener('click',()=>setGameClock('pause').catch(handleError));$('castCancel').addEventListener('click',()=>closeCastModal(null));$('castConfirm').addEventListener('click',()=>closeCastModal([...$('castOptions').querySelectorAll('input:checked')].map(x=>x.value)));$('photoModalClose').addEventListener('click',closePhotoModal);$('photoModal').addEventListener('click',e=>{if(e.target===$('photoModal'))closePhotoModal();});
+    $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{stopGpsAutoTracking();state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';renderQuestionDeck();});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your hiding spot.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));$('seekerEndgameButton').addEventListener('click',()=>{state.seekerEndgamePickMode=true;cancelQuestionPreview();toast('Tap the station you believe is correct.');});$('hiderFoundButton').addEventListener('click',()=>finishGame().catch(handleError));$('startGameClockButton').addEventListener('click',()=>setGameClock('start').catch(handleError));$('pauseGameClockButton').addEventListener('click',()=>setGameClock('pause').catch(handleError));$('castCancel').addEventListener('click',()=>closeCastModal(null));$('castConfirm').addEventListener('click',()=>closeCastModal([...$('castOptions').querySelectorAll('input:checked')].map(x=>x.value)));$('photoModalClose').addEventListener('click',closePhotoModal);$('photoModal').addEventListener('click',e=>{if(e.target===$('photoModal'))closePhotoModal();});
   }
 
   document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.gpsAutoEnabled&&Date.now()-state.lastGpsUpdateMs>=30*60*1000)refreshGpsAutoPosition();});
