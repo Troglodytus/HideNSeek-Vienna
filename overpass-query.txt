@@ -1,29 +1,28 @@
-Vienna Hide & Seek v3.3.1 — Overpass fallback queries
+Vienna Hide & Seek v3.7.0 — Overpass fallback / OSM-only POIs
 
-Core districts, stations and U-/S-Bahn lines no longer use Overpass. They use Stadt Wien WFS.
-Museums, parks, libraries and hospitals also use Stadt Wien WFS.
+Runtime gameplay uses Supabase reference datasets. Developer refreshes split Vienna into 16 small tiles.
+Core districts and transport use Stadt Wien data. The following categories use OSM/Overpass when no Vienna WFS source is configured.
 
-For the remaining OSM-only Tentacle categories, use a fixed Vienna bounding box
-(south, west, north, east): 48.117668,16.18218,48.322571,16.577511
+Vienna bbox (south, west, north, east):
+48.117668,16.18218,48.322571,16.577511
 
 Cinema:
-[out:json][timeout:30];
-nwr["amenity"="cinema"](48.117668,16.18218,48.322571,16.577511);
-out center tags;
+[out:json][timeout:30];nwr["amenity"="cinema"](48.117668,16.18218,48.322571,16.577511);out center tags;
+
+Cemetery / graveyard:
+[out:json][timeout:30];(
+  nwr["landuse"="cemetery"](48.117668,16.18218,48.322571,16.577511);
+  nwr["amenity"="grave_yard"](48.117668,16.18218,48.322571,16.577511);
+);out center tags;
+
+Church / Christian place of worship:
+[out:json][timeout:30];nwr["amenity"="place_of_worship"]["religion"="christian"](48.117668,16.18218,48.322571,16.577511);out center tags;
 
 Zoo:
-[out:json][timeout:30];
-nwr["tourism"="zoo"](48.117668,16.18218,48.322571,16.577511);
-out center tags;
+[out:json][timeout:30];nwr["tourism"="zoo"](48.117668,16.18218,48.322571,16.577511);out center tags;
 
 Aquarium:
-[out:json][timeout:30];
-nwr["tourism"="aquarium"](48.117668,16.18218,48.322571,16.577511);
-out center tags;
+[out:json][timeout:30];nwr["tourism"="aquarium"](48.117668,16.18218,48.322571,16.577511);out center tags;
 
 Amusement park:
-[out:json][timeout:30];
-nwr["tourism"="theme_park"](48.117668,16.18218,48.322571,16.577511);
-out center tags;
-
-The bounding-box form avoids the extra Overpass area lookup used in older builds.
+[out:json][timeout:30];nwr["tourism"="theme_park"](48.117668,16.18218,48.322571,16.577511);out center tags;

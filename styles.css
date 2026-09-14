@@ -357,3 +357,15 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 .final-score-summary strong { color:#166534; }
 .final-score-summary span { color:#4b5563; font-size:10px; }
 .game-entry.finished { opacity:.9; background:#f8fafc; }
+
+/* v3.7: Same-line selector card */
+.question-card-shell { border:1px solid var(--line); background:white; border-radius:15px; min-height:132px; padding:13px; display:grid; align-content:space-between; gap:10px; }
+.question-card-shell.preview-active { border-color:#f59e0b; background:#fffbeb; box-shadow:0 0 0 2px rgba(245,158,11,.12); }
+.question-card-shell.disabled { opacity:.62; background:#f8fafc; }
+.question-card-copy { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+.question-card-shell .q-category { font-size:10px; letter-spacing:.12em; font-weight:900; color:var(--muted); }
+.question-card-shell .q-title { font-size:16px; line-height:1.15; font-weight:850; }
+.question-card-shell .q-detail { font-size:11px; color:var(--muted); line-height:1.35; }
+.question-card-shell .q-state { font-size:10px; font-weight:900; text-transform:uppercase; letter-spacing:.08em; color:var(--accent); }
+.same-line-row { display:grid; grid-template-columns:1fr auto; gap:8px; align-items:center; }
+.same-line-row select { width:100%; min-width:0; }
