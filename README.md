@@ -1,71 +1,67 @@
-# Hide & Seek: Vienna — v3.10.1
+# Hide & Seek: Vienna — v3.11.1
 
-Incremental update on top of v3.9.0.
+Patch release on top of v3.11.0. Existing questions, reference data, and unrelated cards remain unchanged.
 
-## Changes
+## Upgrade from v3.11.0
 
-### Casting costs
-
-Curse casting costs now support five modes:
-
-- None
-- Time bonus
-- Custom / physical requirement
-- Discard any other held card
-- Discard one held card from a chosen category
-
-Discard categories supported by the Developer card editor are Curse, Veto, Time Bonus, Power-up, and Time Trap. The selected payment card is validated and consumed server-side.
-
-`Curse of the Side Quest` uses the new category cost: discard one other Curse.
-
-### New Vienna / movement curses
-
-Added without altering existing card definitions:
-
-- Curse of the Side Quest — random side quest, 45 min; costs one other Curse.
-- Curse of the Deutsche Bahn — choose a cached U-/S-Bahn line; it is marked red and blocked for 30 min.
-- Curse of the 'I lass mir mei Wean ned schlecht redn' — 40 min casting cost. Monday through Tuesday 11:59 Vienna time means a 1 h halt; otherwise Wiener Weinwanderweg access points are shown and the curse can be checked off after reaching one.
-- Curse of the Haute Vollee — districts 1, 18 and 19 are marked red and forbidden for 15 min.
-- Curse of the One Ring — Ringstraße crossing rule.
-- Curse of the Schwarzkappler — get off and buy a ticket; Seeker manually checks it off.
-- Curse of the Wiener Grantler.
-- Curse of the Fiaker — no new questions until a Fiaker is spotted/checkmarked; auto-expires after 1 h.
-- Curse of Mordor — depending on the Seekers' current side, districts 21/22 become the allowed or forbidden side for 20 min.
-- Curse of the Broken Lift.
-- Curse of the Gemeindebau.
-- Curse of Quick Escalation — custom physical casting cost.
-- Curse of the False Prophet — 20 min.
-
-Side Quest and Fiaker actively block the Seeker question deck while their blocking condition is active.
-
-### Map-driven curse effects
-
-The Hider gets a preview before playing map-aware curses. Active public effects are then shown on both game maps:
-
-- Deutsche Bahn: blocked line in red.
-- Haute Vollee: forbidden districts in red.
-- Mordor: currently forbidden districts in red.
-- Weinwanderweg mode: marked route access points.
-
-## Wiener Weinwanderweg data
-
-The current official Wiener Weinwandertag information describes four main routes, not 18 separate routes. v3.10 therefore uses a set of current public access/start/end points from the four official route areas (Neustift–Nußdorf, Strebersdorf–Stammersdorf, Ottakring, and Mauer) rather than inventing 18 route markers.
-
-## Upgrade from v3.9.0
-
-1. Run `supabase-v3.10.1-migration.sql` once in the Supabase SQL Editor.
-2. Replace `app.js`, `index.html`, and `styles.css` in GitHub Pages.
-3. Keep your existing working `config.js`.
-4. Commit/push and hard-refresh.
-5. Verify Developer shows **BUILD 3.10.1**.
+1. Run `supabase-v3.11.1-migration.sql` once in Supabase SQL Editor.
+2. Replace `app.js`, `index.html`, and `styles.css` in the GitHub Pages repo.
+3. Keep the existing working `config.js`.
+4. Commit/push and hard refresh. Developer mode should report build `3.11.1`.
 
 No Vienna reference-data refresh is required.
 
-## Existing Developer editors
+## Turntables adjustment
 
-The v3.9 card-count and question editors remain intact. Only the five core engine cards remain grouped as **Special engine cards**: Prosperous Home, Duplicate, Fresh Shuffle, Time Trap, and Veto. The new interactive curses stay in the normal editable curse catalogue so their title, text, copy count, and casting cost can be adjusted without changing their protected engine behavior.
+`Curse of the Turntables` still pauses the main game clock for a server-timed 20-minute relocation window, freezes Seeker movement/actions, lets the Hider select another hiding station, resets Prosperous Home and the old target deductions, and preserves the old activity history.
 
+After a successful relocation, the next **3 new Seeker questions give no card reward**. They are answered and logged normally, but no Hider draw is created. Old unanswered questions from the previous target phase remain in Activity as reset history and are not shown as current questions.
 
-## v3.10.1 Duplicate hotfix
+## New power-ups
 
-Duplicate now consumes itself and creates a genuine independent copy of the selected held time-bonus or curse card. The source card stays in hand. The new copy can be played, discarded, spent as a casting cost, or counted at final scoring like a normal held card.
+### Double or Nothing
+Works only on a held Curse that has both a time-bonus casting cost and a timer. The Hider pays twice the normal minute cost and the selected Curse lasts twice as long. Both Double or Nothing and the selected Curse are consumed.
+
+### MA48
+Select one previously played/discarded card and return a new instance of it to the Hider hand. The price is information: the Hider's current hand is published to the Seekers in Activity **before** the recycled card is added. The revived card itself is therefore not included in the reveal.
+
+### Kleingedrucktes
+Every Curse can now have a private secondary effect configured in Developer → Card deck. Secondary effects are stored in a Hider/admin-only table, not in the public card catalogue. Kleingedrucktes can be played on an active Curse to reveal its fine print to the Seekers.
+
+Secondary effect modes:
+- `none`
+- `custom` — hidden rule text
+- `engine` — hidden engine key + JSON configuration
+
+The storage/reveal infrastructure is implemented. Engine-key effects are deliberately **not executed yet**; they can be added once their individual rules are defined.
+
+### Same Day Delivery
+Costs 15 minutes of held Time Bonus cards. Draw 3 cards immediately and keep 2 using the normal finite deck.
+
+## Curse of the Deceptive Tiny House
+
+This is a deliberately private engine Curse.
+
+When played:
+- no public curse action/log entry is created;
+- the next eligible Seeker question asked after the card was played may be answered manually/untruthfully by the Hider;
+- the lie permission is consumed by exactly that next question;
+- the final hiding **radius** is multiplied by `1/3`;
+- multiple copies stack multiplicatively;
+- Seekers are not informed that Tiny House was played while the game is still outside public Endgame.
+
+When the Seekers start Endgame, previously armed Tiny House cards are revealed publicly and their radius reduction becomes visible. The reveal does not identify which earlier answer may have been false.
+
+## Developer card editor
+
+The existing card editor now also exposes private Fine Print fields for Curse cards:
+- mode
+- secondary text
+- engine key
+- engine JSON configuration
+
+These fields are only returned through the developer-password RPC.
+
+## Notes
+
+Power-up hand mutations such as MA48 and Same Day Delivery are not exposed as ordinary Undo-able actions; undoing only a public log row without reversing private hand state would corrupt the game state.
