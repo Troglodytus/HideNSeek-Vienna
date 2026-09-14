@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.8.0';
+  const APP_VERSION = '3.9.0';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -35,7 +35,7 @@
   const ACTIVE_POI_TYPES=['museum','park','library','cinema','hospital','cemetery','church','zoo'];
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
 
-  const QUESTION_CARDS = [
+  const DEFAULT_QUESTION_CARDS = [
     { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
     { slot:'same-line', category:'MIXED', title:'On This U-/S-Bahn Line?', detail:'Choose a line. Is the hiding station served by it?', kind:'same_line' },
     { slot:'street-shape', category:'MIXED', title:'Current Street Shape', detail:'Endgame only: receive a hand-drawn outline of the Hider’s nearest street.', kind:'street_shape', endgame_only:true },
@@ -102,7 +102,7 @@
     gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
-    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[]
+    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x}))
   };
 
   const $ = id => document.getElementById(id);
@@ -142,6 +142,25 @@
     if (state.supabase) return;
     assertConfigured();
     state.supabase=window.supabase.createClient(String(CFG.SUPABASE_URL).replace(/\/$/,''),supabasePublicKey(),{auth:{persistSession:false,autoRefreshToken:false}});
+  }
+
+
+  function normalizeQuestionRow(r){
+    const p=(r&&typeof r.params==='object'&&r.params)||{};
+    return {slot:r.question_key,category:r.category,title:r.title,detail:r.description,kind:r.question_kind,endgame_only:!!r.endgame_only,...p};
+  }
+  async function loadQuestionCatalog(){
+    initSupabaseIfNeeded();
+    try{
+      const {data,error}=await state.supabase.from('question_catalog').select('question_key,category,title,description,question_kind,params,endgame_only,enabled,sort_order').eq('enabled',true).order('sort_order',{ascending:true}).order('title',{ascending:true});
+      if(error)throw error;
+      if(Array.isArray(data)&&data.length)state.questionCards=data.map(normalizeQuestionRow);
+      else state.questionCards=DEFAULT_QUESTION_CARDS.map(x=>({...x}));
+    }catch(e){
+      console.warn('Question catalogue unavailable; using built-in defaults.',e);
+      state.questionCards=DEFAULT_QUESTION_CARDS.map(x=>({...x}));
+    }
+    return state.questionCards;
   }
 
   function baseMapOptions(){ return {center:VIENNA_CENTER,zoom:VIENNA_ZOOM,zoomControl:true,minZoom:10,maxZoom:19,preferCanvas:true}; }
@@ -190,31 +209,28 @@
   }
 
   async function fetchOverpass(query,label='Overpass request',timeoutMs=45000){
-    const endpoints=overpassEndpoints();
-    let lastError=null;
-    for(const endpoint of endpoints){
-      if((state.overpassBadUntil[endpoint]||0)>Date.now())continue;
-      const controller=new AbortController();
-      const timer=setTimeout(()=>controller.abort(),timeoutMs);
-      try{
-        const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query),signal:controller.signal});
-        clearTimeout(timer);
-        if(!response.ok){
-          const err=new Error(`${label}: ${endpoint} returned HTTP ${response.status}.`);
-          err.status=response.status;
-          if([429,502,503,504].includes(response.status))state.overpassBadUntil[endpoint]=Date.now()+5*60e3;
-          lastError=err;
-          continue;
+    const endpoints=overpassEndpoints();let lastError=null;
+    for(let round=0;round<2;round++){
+      let candidates=endpoints.filter(endpoint=>(state.overpassBadUntil[endpoint]||0)<=Date.now());
+      if(!candidates.length)candidates=[...endpoints];
+      for(const endpoint of candidates){
+        const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),timeoutMs);
+        try{
+          const response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:'data='+encodeURIComponent(query),signal:controller.signal});
+          clearTimeout(timer);
+          if(!response.ok){
+            const err=new Error(`${label}: ${endpoint} returned HTTP ${response.status}.`);err.status=response.status;lastError=err;
+            if([429,502,503,504].includes(response.status))state.overpassBadUntil[endpoint]=Date.now()+20e3;
+            continue;
+          }
+          state.overpassBadUntil[endpoint]=0;return await response.json();
+        }catch(e){
+          clearTimeout(timer);lastError=e?.name==='AbortError'?new Error(`${label}: ${endpoint} timed out.`):e;state.overpassBadUntil[endpoint]=Date.now()+15e3;
         }
-        return await response.json();
-      }catch(e){
-        clearTimeout(timer);
-        if(e?.name==='AbortError')lastError=new Error(`${label}: ${endpoint} timed out.`);
-        else lastError=e;
-        state.overpassBadUntil[endpoint]=Date.now()+2*60e3;
       }
+      if(round===0)await new Promise(r=>setTimeout(r,900+Math.random()*600));
     }
-    throw new Error(`${label} failed on all configured Overpass servers. ${lastError?.message||''}`.trim());
+    throw new Error(`${label} failed on all configured Overpass servers after retry. ${lastError?.message||''}`.trim());
   }
 
   function wfsUrl(layer,extra={}){
@@ -669,7 +685,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
 
   async function enterGameCommon(){
     state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
-    await ensureMapData(); setupGameMap();
+    await Promise.all([ensureMapData(),loadQuestionCatalog()]); setupGameMap();
     $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
     showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
   }
@@ -1316,11 +1332,11 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     return {ref,travelled,ready:Number.isFinite(travelled)&&travelled+0.5>=Number(card.min_travel_m)};
   }
   function renderQuestionDeck(){
-    const used=new Set(effectiveActions('question').map(a=>a.payload?.slot_key));$('questionDeckStatus').textContent=`${used.size}/${QUESTION_CARDS.length} asked`;
+    const cardsAll=state.questionCards?.length?state.questionCards:DEFAULT_QUESTION_CARDS;const used=new Set(effectiveActions('question').map(a=>a.payload?.slot_key));$('questionDeckStatus').textContent=`${used.size}/${cardsAll.length} asked`;
     const groups=[['MIXED','Mixed'],['RADAR','Radars'],['THERMOMETER','Thermometers'],['TENTACLES','Tentacles'],['PHOTO','Photo questions']],endgame=!!latestAction('endgame_zone'),lines=availableRailLineRefs();
     if(!state.sameLineSelection&&lines.length)state.sameLineSelection=lines[0];
     $('questionDeck').innerHTML=groups.map(([key,label])=>{
-      const cards=QUESTION_CARDS.filter(c=>c.category===key);if(!cards.length)return'';
+      const cards=cardsAll.filter(c=>c.category===key);if(!cards.length)return'';
       const html=cards.map(c=>{
         const isUsed=used.has(c.slot),locked=!!c.endgame_only&&!endgame,disabled=state.role!=='seeker'||isUsed||locked||state.game?.status==='finished',preview=state.previewQuestionSlot===c.slot;let extra='',qstate=isUsed?'Asked':locked?'Endgame only':(state.role==='seeker'?'Available':'Not asked');
         if(c.kind==='thermometer'&&!isUsed&&!locked){const prog=thermometerProgress(c);if(prog){if(state.role==='seeker'&&prog.ready){extra='thermo-ready';qstate=`Ready · moved ${Math.round(prog.travelled)} m`; }else{extra='thermo-armed';qstate=state.role==='seeker'&&Number.isFinite(prog.travelled)?`Armed · ${Math.round(prog.travelled)}/${c.min_travel_m} m`:'Armed';}}}
@@ -1334,7 +1350,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
       return `<section class="question-group"><div class="question-group-title">${label}</div><div class="question-group-grid">${html}</div></section>`;
     }).join('');
     $('questionDeck').querySelectorAll('[data-same-line-select]').forEach(sel=>sel.addEventListener('change',()=>{state.sameLineSelection=sel.value;const p={question_kind:'same_line',line_refs:[sel.value]};previewQuestionGeometry(p);state.previewQuestionSlot='same-line';renderQuestionDeck();}));
-    $('questionDeck').querySelectorAll('[data-question-slot]').forEach(b=>b.addEventListener('click',()=>{const c=QUESTION_CARDS.find(x=>x.slot===b.dataset.questionSlot);if(c)handleQuestionCard(c).catch(handleError);}));
+    $('questionDeck').querySelectorAll('[data-question-slot]').forEach(b=>b.addEventListener('click',()=>{const c=cardsAll.find(x=>x.slot===b.dataset.questionSlot);if(c)handleQuestionCard(c).catch(handleError);}));
   }
 
   function showTentacleCellPreview(q,poi){
@@ -1742,6 +1758,7 @@ ${failures.join('\n')}`,9000);
     document.querySelectorAll('[data-developer-tab]').forEach(b=>b.classList.toggle('active',b.dataset.developerTab===name));
     $('developerReferenceTab').classList.toggle('hidden',name!=='reference');
     $('developerCardsTab').classList.toggle('hidden',name!=='cards');
+    $('developerQuestionsTab').classList.toggle('hidden',name!=='questions');
     $('developerGamesTab').classList.toggle('hidden',name!=='games');
   }
   function minuteCostOptions(selected){
@@ -1752,59 +1769,160 @@ ${failures.join('\n')}`,9000);
     const options=[[null,'No timer'],[600,'10 min'],[1200,'20 min'],[1800,'30 min'],[2400,'40 min'],[2700,'45 min'],[3600,'60 min'],[5400,'90 min'],[7200,'120 min']];
     return options.map(([v,label])=>`<option value="${v??''}" ${String(seconds??'')===String(v??'')?'selected':''}>${label}</option>`).join('');
   }
+  function deckCountOptions(selected){
+    const vals=[];for(let n=0;n<=20;n++)vals.push(n);vals.push(25,30,40,50);
+    return vals.map(n=>`<option value="${n}" ${Number(selected??1)===n?'selected':''}>${n}</option>`).join('');
+  }
   function developerCardHtml(c={},isNew=false){
     const costKind=c.cast_cost_kind||((Number(c.cast_cost_minutes||0)>0)?'time':'none');
-    const key=c.card_key||'',isCurse=isNew||(c.card_kind||'curse')==='curse';
-    return `<div class="developer-card ${c.enabled===false?'disabled':''}" data-developer-card="${escapeHtml(key)}" data-new-card="${isNew?'true':'false'}">
-      <div class="card-key">${isNew?'New card · key created on save':escapeHtml(key)}</div>
+    const key=c.card_key||'',isCurse=isNew||(c.card_kind||'curse')==='curse',special=!!c.special_engine;
+    return `<div class="developer-card ${Number(c.deck_count??1)===0?'disabled':''}" data-developer-card="${escapeHtml(key)}" data-new-card="${isNew?'true':'false'}" data-special-card="${special?'true':'false'}">
+      <div class="card-key">${isNew?'New card · key created on save':escapeHtml(key)}${special?' · engine effect: '+escapeHtml(c.effect_key||''):''}</div>
       <div class="developer-card-grid">
         <label>Title<input class="dev-card-title" maxlength="120" value="${escapeHtml(c.title||'')}"></label>
         <label>Type<select class="dev-card-kind" disabled><option value="curse" ${(c.card_kind||'curse')==='curse'?'selected':''}>Curse</option><option value="powerup" ${c.card_kind==='powerup'?'selected':''}>Power-up</option><option value="time_bonus" ${c.card_kind==='time_bonus'?'selected':''}>Time bonus</option><option value="time_trap" ${c.card_kind==='time_trap'?'selected':''}>Time trap</option></select></label>
         <label>Duration<select class="dev-card-duration">${durationOptions(c.duration_seconds)}</select></label>
-        <label class="check-row"><input type="checkbox" class="dev-card-enabled" ${c.enabled===false?'':'checked'}> In deck</label>
+        <label>Copies<select class="dev-card-count card-count-select">${deckCountOptions(c.deck_count??1)}</select></label>
       </div>
       <label>Card text<textarea class="dev-card-description" maxlength="1200">${escapeHtml(c.description||'')}</textarea></label>
       <div class="card-cost-row ${isCurse?'':'hidden'}">
         <label>Casting cost<select class="dev-card-cost-kind"><option value="none" ${costKind==='none'?'selected':''}>None</option><option value="time" ${costKind==='time'?'selected':''}>Time bonus</option><option value="custom" ${costKind==='custom'?'selected':''}>Custom</option></select></label>
         <label class="card-cost-minutes ${costKind==='time'?'':'hidden'}">Minutes<select class="dev-card-cost-minutes">${minuteCostOptions(c.cast_cost_minutes||5)}</select></label>
-        <label class="card-cost-custom ${costKind==='custom'?'':'hidden'}">Custom cost<input class="dev-card-cost-text" maxlength="240" value="${escapeHtml(c.cast_cost_text||'') }" placeholder="e.g. Roll a 6, sing a song…"></label>
-      </div>${isCurse?'':'<div class="mini-status">Casting costs apply to curse cards. This special card uses its built-in action.</div>'}
-      <div class="developer-card-actions"><button class="secondary" data-save-developer-card>Save</button>${isNew?'':`<button class="danger" data-delete-developer-card>Remove</button>`}</div>
+        <label class="card-cost-custom ${costKind==='custom'?'':'hidden'}">Custom cost<input class="dev-card-cost-text" maxlength="240" value="${escapeHtml(c.cast_cost_text||'')}" placeholder="e.g. Roll a 6, sing a song…"></label>
+      </div>${special?'<div class="mini-status">Built-in effect. The engine behavior is intentionally not editable here.</div>':(!isCurse?'<div class="mini-status">This special card uses its built-in action.</div>':'')}
+      <div class="developer-card-actions"><button class="secondary" data-save-developer-card>Save</button>${isNew||special?'':`<button class="danger" data-delete-developer-card>Remove</button>`}</div>
     </div>`;
   }
   function renderDeveloperCards(cards){
     state.developerCards=cards||[];
-    $('developerCards').innerHTML=state.developerCards.length?state.developerCards.map(c=>developerCardHtml(c,false)).join(''):'<div class="status-box">No cards in the catalogue.</div>';
+    const regular=state.developerCards.filter(c=>!c.special_engine),special=state.developerCards.filter(c=>c.special_engine);
+    $('developerCards').innerHTML=regular.length?regular.map(c=>developerCardHtml(c,false)).join(''):'<div class="status-box">No editable cards.</div>';
+    $('developerSpecialCards').innerHTML=special.length?special.map(c=>developerCardHtml(c,false)).join(''):'<div class="status-box">No engine cards.</div>';
     bindDeveloperCardRows();
   }
   function bindDeveloperCardRows(){
-    $('developerCards').querySelectorAll('.dev-card-cost-kind').forEach(sel=>{if(sel.dataset.bound)return;sel.dataset.bound='1';sel.addEventListener('change',()=>{const row=sel.closest('.developer-card'),kind=sel.value;row.querySelector('.card-cost-minutes').classList.toggle('hidden',kind!=='time');row.querySelector('.card-cost-custom').classList.toggle('hidden',kind!=='custom');});});
-    $('developerCards').querySelectorAll('[data-save-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminSaveCard(b.closest('.developer-card')).catch(handleError));});
-    $('developerCards').querySelectorAll('[data-delete-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminDeleteCard(b.closest('.developer-card')).catch(handleError));});
+    document.querySelectorAll('#developerCards .dev-card-cost-kind,#developerSpecialCards .dev-card-cost-kind').forEach(sel=>{if(sel.dataset.bound)return;sel.dataset.bound='1';sel.addEventListener('change',()=>{const row=sel.closest('.developer-card'),kind=sel.value;row.querySelector('.card-cost-minutes')?.classList.toggle('hidden',kind!=='time');row.querySelector('.card-cost-custom')?.classList.toggle('hidden',kind!=='custom');});});
+    document.querySelectorAll('#developerCards [data-save-developer-card],#developerSpecialCards [data-save-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminSaveCard(b.closest('.developer-card')).catch(handleError));});
+    document.querySelectorAll('#developerCards [data-delete-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminDeleteCard(b.closest('.developer-card')).catch(handleError));});
   }
   function addDeveloperCardForm(){
     if($('developerCards').querySelector('[data-new-card="true"]'))return toast('Finish or remove the new card form first.');
-    $('developerCards').insertAdjacentHTML('afterbegin',developerCardHtml({card_kind:'curse',effect_key:'custom_rule',enabled:true,cast_cost_kind:'none'},true));bindDeveloperCardRows();
+    $('developerCards').insertAdjacentHTML('afterbegin',developerCardHtml({card_kind:'curse',effect_key:'custom_rule',deck_count:1,cast_cost_kind:'none'},true));bindDeveloperCardRows();
     $('developerCards').querySelector('[data-new-card="true"] .dev-card-title')?.focus();
   }
   async function adminSaveCard(row){
-    const isNew=row.dataset.newCard==='true',costKind=row.querySelector('.dev-card-cost-kind').value;
+    const isNew=row.dataset.newCard==='true',costKind=row.querySelector('.dev-card-cost-kind')?.value||'none';
+    const old=state.developerCards.find(c=>c.card_key===row.dataset.developerCard);
     const args={
       p_password:state.developerPassword,p_card_key:isNew?'':row.dataset.developerCard,
       p_title:row.querySelector('.dev-card-title').value.trim(),p_description:row.querySelector('.dev-card-description').value.trim(),
       p_duration_seconds:row.querySelector('.dev-card-duration').value===''?null:Number(row.querySelector('.dev-card-duration').value),
-      p_card_kind:row.querySelector('.dev-card-kind').value,p_effect_key:isNew?'custom_rule':(state.developerCards.find(c=>c.card_key===row.dataset.developerCard)?.effect_key||'custom_rule'),
-      p_value_int:isNew?null:(state.developerCards.find(c=>c.card_key===row.dataset.developerCard)?.value_int??null),
-      p_cast_cost_kind:costKind,p_cast_cost_minutes:costKind==='time'?Number(row.querySelector('.dev-card-cost-minutes').value):0,
-      p_cast_cost_text:costKind==='custom'?row.querySelector('.dev-card-cost-text').value.trim():null,p_enabled:row.querySelector('.dev-card-enabled').checked
+      p_card_kind:row.querySelector('.dev-card-kind').value,p_effect_key:isNew?'custom_rule':(old?.effect_key||'custom_rule'),
+      p_value_int:isNew?null:(old?.value_int??null),p_cast_cost_kind:costKind,
+      p_cast_cost_minutes:costKind==='time'?Number(row.querySelector('.dev-card-cost-minutes').value):0,
+      p_cast_cost_text:costKind==='custom'?row.querySelector('.dev-card-cost-text').value.trim():null,
+      p_deck_count:Number(row.querySelector('.dev-card-count').value)
     };
-    const ok=await confirmAction(isNew?'Add this card?':'Save card changes?',`${args.p_title}\n\n${args.p_description}`,'Save');if(!ok)return;
-    const {error}=await state.supabase.rpc('admin_save_card_v1',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+    const ok=await confirmAction(isNew?'Add this card?':'Save card changes?',`${args.p_title}\nCopies: ${args.p_deck_count}\n\n${args.p_description}`,'Save');if(!ok)return;
+    const {error}=await state.supabase.rpc('admin_save_card_v2',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
   }
   async function adminDeleteCard(row){
     const key=row.dataset.developerCard,title=row.querySelector('.dev-card-title').value.trim();
-    const ok=await confirmAction('Remove this card from the deck?',`${title}\n\nIt will disappear from future draws and reshuffles. Already-drawn copies in running games are not changed.`,'Remove',true);if(!ok)return;
+    const ok=await confirmAction('Delete this card definition?',`${title}\n\nAlready-drawn cards in running games keep their snapshot.`,'Delete',true);if(!ok)return;
     const {error}=await state.supabase.rpc('admin_delete_card_v1',{p_password:state.developerPassword,p_card_key:key});if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+  }
+
+  const QUESTION_KINDS=['district','same_line','street_shape','district_set','landmark_compare','directional','radar','thermometer','tentacle','photo'];
+  function questionParamFields(q={}){
+    const p=q.params||{};switch(q.question_kind||'radar'){
+      case 'radar':return `<label>Radius (m)<input class="dev-q-radius" type="number" min="10" step="10" value="${Number(p.radius_m??1000)}"></label>`;
+      case 'thermometer':return `<label>Minimum movement (m)<input class="dev-q-travel" type="number" min="10" step="10" value="${Number(p.min_travel_m??500)}"></label>`;
+      case 'district_set':return `<label>Districts (comma separated)<input class="dev-q-districts" value="${escapeHtml((p.districts||[]).join(','))}"></label><label>Yes label<input class="dev-q-yes" value="${escapeHtml(p.yes_label||'Yes')}"></label><label>No label<input class="dev-q-no" value="${escapeHtml(p.no_label||'No')}"></label>`;
+      case 'landmark_compare':return `<label>Landmark<input class="dev-q-landmark-name" value="${escapeHtml(p.landmark_name||'Landmark')}"></label><label>Latitude<input class="dev-q-lat" type="number" step="0.000001" value="${Number(p.landmark?.lat??48.20849)}"></label><label>Longitude<input class="dev-q-lng" type="number" step="0.000001" value="${Number(p.landmark?.lng??16.37208)}"></label>`;
+      case 'directional':return `<label>Axis<select class="dev-q-axis"><option value="lat" ${p.axis==='lat'?'selected':''}>North / South</option><option value="lng" ${p.axis==='lng'?'selected':''}>East / West</option></select></label><label>Positive label<input class="dev-q-positive" value="${escapeHtml(p.positive_label||'Yes')}"></label><label>Negative label<input class="dev-q-negative" value="${escapeHtml(p.negative_label||'No')}"></label>`;
+      case 'tentacle':return `<label>POI category<select class="dev-q-poi">${ACTIVE_POI_TYPES.map(t=>`<option value="${t}" ${p.poi_type===t?'selected':''}>${humanize(t)}</option>`).join('')}</select></label>`;
+      case 'photo':return `<label>Photo prompt<input class="dev-q-photo" value="${escapeHtml(p.photo_prompt||q.title||'Photo')}"></label>`;
+      default:return `<div class="mini-status">No numeric parameters for this rule type.</div>`;
+    }
+  }
+  function questionRulePreview(q={}){
+    const p=q.params||{},k=q.question_kind||q.kind;switch(k){
+      case 'radar':return `Internal comparison:\ndistance(target, seeker_origin) <= ${Number(p.radius_m??q.radius_m??0)} m\nMap cut: keep circle on YES; remove circle on NO.`;
+      case 'thermometer':return `Internal comparison:\ndistance(target, B) < distance(target, A)\nA = armed start; B = current seeker point after >= ${Number(p.min_travel_m??q.min_travel_m??0)} m.\nMap cut: perpendicular bisector; keep B side for Warmer, A side for Colder.`;
+      case 'district':return `Reference: ${REF_ADMIN_KEY}\nInternal: district(target) == district(seeker_origin).\nUses point-in-polygon against the 23 stored Vienna district polygons.`;
+      case 'district_set':return `Reference: ${REF_ADMIN_KEY}\nInternal: district(target) IN [${(p.districts||q.districts||[]).join(', ')}].`;
+      case 'landmark_compare':{const lm=p.landmark||q.landmark||{};return `Internal comparison:\ndistance(target, [${lm.lat}, ${lm.lng}]) < distance(seeker_origin, [${lm.lat}, ${lm.lng}])\nMap cut: landmark-centered circle at the Seeker's current landmark distance.`;}
+      case 'directional':return `Internal comparison:\n${(p.axis||q.axis)==='lat'?'target.latitude > seeker.latitude':'target.longitude > seeker.longitude'}\nMap cut: horizontal/vertical half-plane.`;
+      case 'same_line':return `References: ${REF_STATIONS_KEY} + ${REF_TRANSIT_KEY}\nInternal: selected U-/S-Bahn line is present in target station lineRefs.\nMap cut: keep/remove the buffered selected rail corridor.`;
+      case 'tentacle':{const type=p.poi_type||q.poi_type||'museum',filter=POI_QUERIES[type];const fs=(Array.isArray(filter)?filter:[filter]).filter(Boolean).map(x=>`nwr${x}(S,W,N,E);`).join('\n');return `Reference dataset: ${REF_POI_PREFIX}${type}_v1\nDeveloper refresh Overpass fallback:\n[out:json][timeout:20];\n(${fs})\nout center tags qt;\n\nEndgame rule: if target-seeker >250 m -> automatic veto + exclude 250 m seeker circle. Otherwise use candidate POIs within 5 km and keep the answered POI's Voronoi cell.`;}
+      case 'photo':return `No spatial comparison. The Hider sends the configured photo prompt through the private game-photo upload flow.`;
+      case 'street_shape':return `Endgame engine rule: query nearest highway geometry around the private hiding point, preserve its real map orientation, remove labels/context, render a jittered black-on-white PNG, then send only the image.`;
+      default:return 'Built-in rule.';
+    }
+  }
+  function developerQuestionHtml(q={},isNew=false){
+    const key=q.question_key||'',kind=q.question_kind||'radar',category=q.category||'MIXED';
+    return `<div class="developer-question ${q.enabled===false?'disabled':''}" data-developer-question="${escapeHtml(key)}" data-new-question="${isNew?'true':'false'}">
+      <div class="card-key">${isNew?'New question · key created on save':escapeHtml(key)}</div>
+      <div class="developer-question-grid">
+        <label>Title<input class="dev-q-title" maxlength="120" value="${escapeHtml(q.title||'')}"></label>
+        <label>Category<select class="dev-q-category">${['MIXED','RADAR','THERMOMETER','TENTACLES','PHOTO'].map(x=>`<option value="${x}" ${category===x?'selected':''}>${x}</option>`).join('')}</select></label>
+        <label>Rule type<select class="dev-q-kind">${QUESTION_KINDS.map(x=>`<option value="${x}" ${kind===x?'selected':''}>${x}</option>`).join('')}</select></label>
+        <label>Order<input class="dev-q-order" type="number" step="10" value="${Number(q.sort_order??100)}"></label>
+      </div>
+      <label>Question text<textarea class="dev-q-description" maxlength="800">${escapeHtml(q.description||'')}</textarea></label>
+      <div class="question-param-grid">${questionParamFields(q)}</div>
+      <div class="row wrap"><label class="check-row"><input type="checkbox" class="dev-q-enabled" ${q.enabled===false?'':'checked'}> Enabled</label><label class="check-row"><input type="checkbox" class="dev-q-endgame" ${q.endgame_only?'checked':''}> Endgame only</label></div>
+      <div><div class="mini-status">Rule / query preview</div><pre class="developer-rule-preview">${escapeHtml(questionRulePreview(q))}</pre></div>
+      <div class="developer-card-actions"><button class="secondary" data-save-developer-question>Save</button>${isNew?'':`<button class="secondary" data-duplicate-developer-question>Duplicate</button><button class="danger" data-delete-developer-question>Remove</button>`}</div>
+    </div>`;
+  }
+  function renderDeveloperQuestions(items){
+    state.developerQuestions=items||[];
+    $('developerQuestions').innerHTML=state.developerQuestions.length?state.developerQuestions.map(q=>developerQuestionHtml(q,false)).join(''):'<div class="status-box">No questions.</div>';
+    bindDeveloperQuestionRows();
+  }
+  function currentQuestionFormObject(row){
+    const kind=row.querySelector('.dev-q-kind').value;let params={};
+    if(kind==='radar')params.radius_m=Number(row.querySelector('.dev-q-radius')?.value||1000);
+    else if(kind==='thermometer')params.min_travel_m=Number(row.querySelector('.dev-q-travel')?.value||500);
+    else if(kind==='district_set')params={districts:String(row.querySelector('.dev-q-districts')?.value||'').split(',').map(x=>Number(x.trim())).filter(x=>Number.isInteger(x)&&x>=1&&x<=23),yes_label:row.querySelector('.dev-q-yes')?.value.trim()||'Yes',no_label:row.querySelector('.dev-q-no')?.value.trim()||'No'};
+    else if(kind==='landmark_compare')params={landmark_name:row.querySelector('.dev-q-landmark-name')?.value.trim()||'Landmark',landmark:{lat:Number(row.querySelector('.dev-q-lat')?.value),lng:Number(row.querySelector('.dev-q-lng')?.value)}};
+    else if(kind==='directional')params={axis:row.querySelector('.dev-q-axis')?.value||'lat',positive_label:row.querySelector('.dev-q-positive')?.value.trim()||'Yes',negative_label:row.querySelector('.dev-q-negative')?.value.trim()||'No'};
+    else if(kind==='tentacle')params={poi_type:row.querySelector('.dev-q-poi')?.value||'museum'};
+    else if(kind==='photo')params={photo_prompt:row.querySelector('.dev-q-photo')?.value.trim()||row.querySelector('.dev-q-title').value.trim()};
+    return {question_key:row.dataset.newQuestion==='true'?'':row.dataset.developerQuestion,category:row.querySelector('.dev-q-category').value,title:row.querySelector('.dev-q-title').value.trim(),description:row.querySelector('.dev-q-description').value.trim(),question_kind:kind,params,endgame_only:row.querySelector('.dev-q-endgame').checked,enabled:row.querySelector('.dev-q-enabled').checked,sort_order:Number(row.querySelector('.dev-q-order').value||100)};
+  }
+  function rebuildQuestionParamArea(row){
+    const q=currentQuestionFormObject(row);row.querySelector('.question-param-grid').innerHTML=questionParamFields(q);row.querySelector('.developer-rule-preview').textContent=questionRulePreview(q);
+    row.querySelector('.question-param-grid').querySelectorAll('input,select').forEach(el=>el.addEventListener('input',()=>{row.querySelector('.developer-rule-preview').textContent=questionRulePreview(currentQuestionFormObject(row));}));
+  }
+  function bindDeveloperQuestionRows(){
+    $('developerQuestions').querySelectorAll('.developer-question').forEach(row=>{
+      const kind=row.querySelector('.dev-q-kind');if(!kind.dataset.bound){kind.dataset.bound='1';kind.addEventListener('change',()=>rebuildQuestionParamArea(row));}
+      row.querySelectorAll('.question-param-grid input,.question-param-grid select').forEach(el=>{if(el.dataset.bound)return;el.dataset.bound='1';el.addEventListener('input',()=>{row.querySelector('.developer-rule-preview').textContent=questionRulePreview(currentQuestionFormObject(row));});});
+    });
+    $('developerQuestions').querySelectorAll('[data-save-developer-question]').forEach(b=>b.addEventListener('click',()=>adminSaveQuestion(b.closest('.developer-question')).catch(handleError)));
+    $('developerQuestions').querySelectorAll('[data-delete-developer-question]').forEach(b=>b.addEventListener('click',()=>adminDeleteQuestion(b.closest('.developer-question')).catch(handleError)));
+    $('developerQuestions').querySelectorAll('[data-duplicate-developer-question]').forEach(b=>b.addEventListener('click',()=>duplicateDeveloperQuestion(b.closest('.developer-question'))));
+  }
+  function addDeveloperQuestionForm(seed=null){
+    if($('developerQuestions').querySelector('[data-new-question="true"]'))return toast('Finish or remove the new question form first.');
+    const q=seed?{...seed,question_key:'',title:`${seed.title} copy`,enabled:true}:{category:'RADAR',title:'New Radar',description:'',question_kind:'radar',params:{radius_m:1000},endgame_only:false,enabled:true,sort_order:999};
+    $('developerQuestions').insertAdjacentHTML('afterbegin',developerQuestionHtml(q,true));bindDeveloperQuestionRows();$('developerQuestions').querySelector('[data-new-question="true"] .dev-q-title')?.focus();
+  }
+  function duplicateDeveloperQuestion(row){const q=state.developerQuestions.find(x=>x.question_key===row.dataset.developerQuestion);if(q)addDeveloperQuestionForm(q);}
+  async function adminSaveQuestion(row){
+    const q=currentQuestionFormObject(row),isNew=row.dataset.newQuestion==='true';
+    const ok=await confirmAction(isNew?'Add this question?':'Save question changes?',`${q.title}\n${q.question_kind}`,'Save');if(!ok)return;
+    const {error}=await state.supabase.rpc('admin_save_question_v1',{p_password:state.developerPassword,p_question_key:q.question_key,p_category:q.category,p_title:q.title,p_description:q.description,p_question_kind:q.question_kind,p_params:q.params,p_endgame_only:q.endgame_only,p_enabled:q.enabled,p_sort_order:q.sort_order});if(error)throw error;
+    await loadDeveloperDashboard();await loadQuestionCatalog();showDeveloperTab('questions');
+  }
+  async function adminDeleteQuestion(row){
+    const q=state.developerQuestions.find(x=>x.question_key===row.dataset.developerQuestion),title=q?.title||row.querySelector('.dev-q-title').value;
+    const ok=await confirmAction('Delete this question?',`${title}\n\nAlready-asked questions in existing games remain in their activity history.`,'Delete',true);if(!ok)return;
+    const {error}=await state.supabase.rpc('admin_delete_question_v1',{p_password:state.developerPassword,p_question_key:row.dataset.developerQuestion});if(error)throw error;
+    await loadDeveloperDashboard();await loadQuestionCatalog();showDeveloperTab('questions');
   }
 
   async function developerLogin(){
@@ -1813,17 +1931,30 @@ ${failures.join('\n')}`,9000);
   }
   async function loadDeveloperDashboard(){
     if(!state.developerPassword)return;
-    const [gamesRes,refsRes,cardsRes]=await Promise.all([
+    const [gamesRes,refsRes,cardsRes,questionsRes]=await Promise.all([
       state.supabase.rpc('admin_list_games_v1',{p_password:state.developerPassword}),
       state.supabase.from('reference_datasets').select('dataset_key,source,content_hash,updated_at,checked_at').order('dataset_key'),
-      state.supabase.rpc('admin_list_cards_v1',{p_password:state.developerPassword})
+      state.supabase.rpc('admin_list_cards_v2',{p_password:state.developerPassword}),
+      state.supabase.rpc('admin_list_questions_v1',{p_password:state.developerPassword})
     ]);
-    if(gamesRes.error)throw gamesRes.error;if(refsRes.error)throw refsRes.error;if(cardsRes.error)throw cardsRes.error;
-    renderDeveloperGames(gamesRes.data||[]);renderReferenceStatus(refsRes.data||[]);renderDeveloperCards(cardsRes.data||[]);
+    if(gamesRes.error)throw gamesRes.error;if(refsRes.error)throw refsRes.error;if(cardsRes.error)throw cardsRes.error;if(questionsRes.error)throw questionsRes.error;
+    renderDeveloperGames(gamesRes.data||[]);renderReferenceStatus(refsRes.data||[]);renderDeveloperCards(cardsRes.data||[]);renderDeveloperQuestions(questionsRes.data||[]);
   }
   function renderReferenceStatus(refs){
-    const required=[REF_ADMIN_KEY,REF_STATIONS_KEY,REF_TRANSIT_KEY,...ACTIVE_POI_TYPES.map(t=>REF_POI_PREFIX+t+'_v1')];const by=new Map(refs.map(r=>[r.dataset_key,r]));
-    $('developerReferenceList').innerHTML=required.map(k=>{const r=by.get(k);return `<div class="reference-row ${r?'ok':'missing'}"><strong>${escapeHtml(k)}</strong><span>${r?`${escapeHtml(r.source||'saved')} · changed ${new Date(r.updated_at).toLocaleString()}${r.checked_at?` · checked ${new Date(r.checked_at).toLocaleString()}`:''}`:'MISSING'}</span></div>`;}).join('');
+    const required=[REF_ADMIN_KEY,REF_STATIONS_KEY,REF_TRANSIT_KEY,...ACTIVE_POI_TYPES.map(t=>REF_POI_PREFIX+t+'_v1')],by=new Map(refs.map(r=>[r.dataset_key,r])),tiles=refreshGrid();
+    $('developerReferenceList').innerHTML=required.map(k=>{
+      const r=by.get(k),poiType=k.startsWith(REF_POI_PREFIX)?k.slice(REF_POI_PREFIX.length,-3):null;
+      let chunkHtml='';
+      if(poiType){
+        const have=new Set(refs.filter(x=>x.dataset_key.startsWith(`${k}__chunk_`)).map(x=>x.dataset_key));
+        const missing=tiles.filter(t=>!have.has(chunkDatasetKey(k,t.id))).map(t=>t.id);
+        if(missing.length){
+          const shown=missing.slice(0,8),more=missing.length-shown.length;chunkHtml=`<div class="reference-missing-tiles"><span>${tiles.length-missing.length}/${tiles.length} tiles</span>${shown.map(x=>`<code>${x}</code>`).join('')}${more>0?`<span>+${more} more</span>`:''}<button class="secondary small" data-retry-poi="${escapeHtml(poiType)}">Retry missing</button></div>`;
+        }else if(have.size){chunkHtml=`<div class="mini-status">${tiles.length}/${tiles.length} tiles stored</div>`;}
+      }
+      return `<div class="reference-row ${r?'ok':'missing'}"><strong>${escapeHtml(k)}</strong><span>${r?`${escapeHtml(r.source||'saved')} · changed ${new Date(r.updated_at).toLocaleString()}${r.checked_at?` · checked ${new Date(r.checked_at).toLocaleString()}`:''}`:'MISSING'}</span>${chunkHtml}</div>`;
+    }).join('');
+    $('developerReferenceList').querySelectorAll('[data-retry-poi]').forEach(b=>b.addEventListener('click',async()=>{try{const type=b.dataset.retryPoi,status=$('developerReferenceStatus');const r=await refreshPoiChunked(type,status,{});status.textContent=r.complete?`${humanize(type)} complete · ${r.count} POIs`:`${humanize(type)} partial · ${r.missing.length} tiles missing`;await loadDeveloperDashboard();}catch(e){handleError(e);}}));
   }
   function renderDeveloperGames(games){
     $('developerGames').innerHTML=games.length?games.map(g=>`<div class="developer-game" data-admin-game="${g.id}"><input class="admin-game-name" value="${escapeHtml(g.name)}" maxlength="80"><select class="admin-game-status"><option value="active" ${g.status==='active'?'selected':''}>active</option><option value="finished" ${g.status==='finished'?'selected':''}>finished</option></select><div class="meta">${escapeHtml(g.station_name||'No station')} · ${new Date(g.created_at).toLocaleString()}</div><div class="developer-game-actions"><button class="secondary" data-admin-save="${g.id}">Save</button><button class="danger" data-admin-delete="${g.id}">Delete</button></div></div>`).join(''):'<div class="status-box">No games.</div>';
@@ -1832,13 +1963,13 @@ ${failures.join('\n')}`,9000);
   }
   async function adminSaveGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value.trim(),status=row.querySelector('.admin-game-status').value;const ok=await confirmAction('Save game changes?',`${name}\nStatus: ${status}`,'Save');if(!ok)return;const {error}=await state.supabase.rpc('admin_update_game_v1',{p_password:state.developerPassword,p_game_id:id,p_name:name,p_status:status});if(error)throw error;await loadDeveloperDashboard();}
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
-  function openDeveloper(){state.developerPassword=null;state.developerCards=[];$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
+  function openDeveloper(){state.developerPassword=null;state.developerCards=[];state.developerQuestions=[];$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
   function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){
-    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshOnePoi')?.addEventListener('click',()=>refreshSelectedPoi().catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);$('developerAddCard').addEventListener('click',addDeveloperCardForm);document.querySelectorAll('[data-developer-tab]').forEach(b=>b.addEventListener('click',()=>showDeveloperTab(b.dataset.developerTab)));
+    document.querySelector('[data-action="open-developer"]').addEventListener('click',openDeveloper);document.querySelector('[data-action="developer-home"]').addEventListener('click',()=>showView('homeView'));$('developerLoginButton').addEventListener('click',()=>developerLogin().catch(handleError));$('developerRefreshCore').addEventListener('click',()=>refreshReferenceData('core').catch(handleError));$('developerRefreshPois').addEventListener('click',()=>refreshReferenceData('pois').catch(handleError));$('developerRefreshOnePoi')?.addEventListener('click',()=>refreshSelectedPoi().catch(handleError));$('developerRefreshAll').addEventListener('click',()=>refreshReferenceData('all').catch(handleError));$('developerImportCache').addEventListener('click',importBrowserReferenceCache);$('developerAddCard').addEventListener('click',addDeveloperCardForm);$('developerAddQuestion').addEventListener('click',()=>addDeveloperQuestionForm());document.querySelectorAll('[data-developer-tab]').forEach(b=>b.addEventListener('click',()=>showDeveloperTab(b.dataset.developerTab)));
     document.querySelector('[data-action="open-hider"]').addEventListener('click',()=>openLobby('hider'));document.querySelector('[data-action="open-seeker"]').addEventListener('click',()=>openLobby('seeker'));document.querySelector('[data-action="home"]').addEventListener('click',()=>showView('homeView'));document.querySelector('[data-action="leave-game"]').addEventListener('click',leaveGame);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
