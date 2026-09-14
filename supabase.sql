@@ -1608,3 +1608,979 @@ on conflict(card_key) do update set
   value_int=excluded.value_int,
   cast_cost_minutes=excluded.cast_cost_minutes;
 
+
+-- ============================================================================
+-- v3.8.0 additions: developer card catalogue + custom casting costs
+-- ============================================================================
+-- Hide & Seek: Vienna v3.8.0
+-- Developer card catalogue + editable/custom casting costs.
+
+alter table public.curse_cards add column if not exists cast_cost_kind text not null default 'none';
+alter table public.curse_cards add column if not exists cast_cost_text text;
+alter table public.curse_cards add column if not exists enabled boolean not null default true;
+
+alter table public.curse_cards drop constraint if exists curse_cards_cast_cost_kind_check;
+alter table public.curse_cards add constraint curse_cards_cast_cost_kind_check
+  check (cast_cost_kind in ('none','time','custom'));
+
+update public.curse_cards
+set cast_cost_kind=case when coalesce(cast_cost_minutes,0)>0 then 'time' else 'none' end
+where cast_cost_kind='none' and coalesce(cast_cost_minutes,0)>0;
+
+create or replace function public.admin_list_cards_v1(p_password text)
+returns table(
+  card_key text,
+  title text,
+  description text,
+  duration_seconds integer,
+  card_kind text,
+  effect_key text,
+  value_int integer,
+  cast_cost_minutes integer,
+  cast_cost_kind text,
+  cast_cost_text text,
+  enabled boolean
+)
+language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then
+    perform pg_sleep(0.35);
+    raise exception 'Invalid developer password.';
+  end if;
+  return query
+  select c.card_key,c.title,c.description,c.duration_seconds,c.card_kind,c.effect_key,c.value_int,
+         c.cast_cost_minutes,c.cast_cost_kind,c.cast_cost_text,c.enabled
+  from public.curse_cards c
+  order by case c.card_kind when 'time_bonus' then 1 when 'powerup' then 2 when 'time_trap' then 3 else 4 end,
+           c.title,c.card_key;
+end;$$;
+
+grant execute on function public.admin_list_cards_v1(text) to anon,authenticated;
+
+create or replace function public.admin_save_card_v1(
+  p_password text,
+  p_card_key text,
+  p_title text,
+  p_description text,
+  p_duration_seconds integer,
+  p_card_kind text,
+  p_effect_key text,
+  p_value_int integer,
+  p_cast_cost_kind text,
+  p_cast_cost_minutes integer,
+  p_cast_cost_text text,
+  p_enabled boolean
+) returns text
+language plpgsql security definer set search_path=public,extensions as $$
+declare v_key text;
+begin
+  if not public._admin_password_ok(p_password) then
+    perform pg_sleep(0.35);
+    raise exception 'Invalid developer password.';
+  end if;
+  if char_length(trim(coalesce(p_title,''))) not between 1 and 120 then raise exception 'Card title must be 1-120 characters.'; end if;
+  if char_length(trim(coalesce(p_description,''))) not between 1 and 1200 then raise exception 'Card text must be 1-1200 characters.'; end if;
+  if p_card_kind not in ('curse','powerup','time_bonus','time_trap') then raise exception 'Invalid card type.'; end if;
+  if p_cast_cost_kind not in ('none','time','custom') then raise exception 'Invalid casting-cost type.'; end if;
+  if p_duration_seconds is not null and p_duration_seconds<0 then raise exception 'Invalid duration.'; end if;
+  if p_cast_cost_kind='time' and (coalesce(p_cast_cost_minutes,0)<=0 or p_cast_cost_minutes%5<>0 or p_cast_cost_minutes>120) then raise exception 'Time casting cost must be 5-120 minutes in 5-minute steps.'; end if;
+  if p_cast_cost_kind='custom' and char_length(trim(coalesce(p_cast_cost_text,'')))<1 then raise exception 'Enter the custom casting cost.'; end if;
+
+  v_key=nullif(trim(coalesce(p_card_key,'')),'');
+  if v_key is null then v_key='custom-'||replace(gen_random_uuid()::text,'-',''); end if;
+
+  insert into public.curse_cards(card_key,title,description,duration_seconds,card_kind,effect_key,value_int,cast_cost_minutes,cast_cost_kind,cast_cost_text,enabled)
+  values(
+    v_key,trim(p_title),trim(p_description),p_duration_seconds,p_card_kind,
+    coalesce(nullif(trim(coalesce(p_effect_key,'')),''),'custom_rule'),p_value_int,
+    case when p_cast_cost_kind='time' then p_cast_cost_minutes else 0 end,
+    p_cast_cost_kind,case when p_cast_cost_kind='custom' then trim(p_cast_cost_text) else null end,
+    coalesce(p_enabled,true)
+  )
+  on conflict(card_key) do update set
+    title=excluded.title,description=excluded.description,duration_seconds=excluded.duration_seconds,
+    card_kind=excluded.card_kind,effect_key=excluded.effect_key,value_int=excluded.value_int,
+    cast_cost_minutes=excluded.cast_cost_minutes,cast_cost_kind=excluded.cast_cost_kind,
+    cast_cost_text=excluded.cast_cost_text,enabled=excluded.enabled;
+  return v_key;
+end;$$;
+
+grant execute on function public.admin_save_card_v1(text,text,text,text,integer,text,text,integer,text,integer,text,boolean) to anon,authenticated;
+
+create or replace function public.admin_delete_card_v1(p_password text,p_card_key text)
+returns boolean language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then
+    perform pg_sleep(0.35);
+    raise exception 'Invalid developer password.';
+  end if;
+  delete from public.curse_cards where card_key=p_card_key;
+  return found;
+end;$$;
+
+grant execute on function public.admin_delete_card_v1(text,text) to anon,authenticated;
+
+-- Future reshuffles use only enabled catalogue cards.
+create or replace function public._reshuffle_card_deck_v1(p_game_id uuid)
+returns integer language plpgsql security definer set search_path=public as $$
+declare v_deck jsonb;v_cycle integer;
+begin
+  select coalesce(jsonb_agg(c.card_key order by random()),'[]'::jsonb) into v_deck
+  from public.curse_cards c
+  where c.enabled
+    and not exists(
+      select 1 from public.curse_draws d
+      where d.game_id=p_game_id and d.kept_card_keys ? c.card_key and not(d.used_card_keys ? c.card_key)
+    );
+  insert into public.game_card_state(game_id,cycle,deck,cursor,updated_at)
+  values(p_game_id,1,v_deck,0,now())
+  on conflict(game_id) do update set cycle=public.game_card_state.cycle+1,deck=excluded.deck,cursor=0,updated_at=now()
+  returning cycle into v_cycle;
+  return v_cycle;
+end;$$;
+
+create or replace function public._draw_cards_v4(p_game_id uuid,p_count integer)
+returns jsonb language plpgsql security definer set search_path=public as $$
+declare v_result jsonb:='[]'::jsonb;v_state public.game_card_state%rowtype;v_key text;v_card public.curse_cards%rowtype;
+begin
+  if p_count<=0 then return v_result; end if;
+  if not exists(select 1 from public.game_card_state where game_id=p_game_id) then perform public._reshuffle_card_deck_v1(p_game_id); end if;
+  while jsonb_array_length(v_result)<p_count loop
+    select * into v_state from public.game_card_state where game_id=p_game_id for update;
+    if v_state.cursor>=jsonb_array_length(v_state.deck) then
+      perform public._reshuffle_card_deck_v1(p_game_id);
+      select * into v_state from public.game_card_state where game_id=p_game_id for update;
+      if jsonb_array_length(v_state.deck)=0 then exit; end if;
+    end if;
+    v_key:=v_state.deck->>v_state.cursor;
+    update public.game_card_state set cursor=cursor+1,updated_at=now() where game_id=p_game_id;
+    select * into v_card from public.curse_cards where card_key=v_key and enabled;
+    if found then
+      v_result:=v_result||jsonb_build_array(jsonb_build_object(
+        'card_key',v_card.card_key,'title',v_card.title,'description',v_card.description,
+        'duration_seconds',v_card.duration_seconds,'card_kind',v_card.card_kind,
+        'effect_key',v_card.effect_key,'value_int',v_card.value_int,
+        'cast_cost_minutes',v_card.cast_cost_minutes,'cast_cost_kind',v_card.cast_cost_kind,
+        'cast_cost_text',v_card.cast_cost_text));
+    end if;
+  end loop;
+  return v_result;
+end;$$;
+
+-- Keep automatic time-bonus payment for time costs; custom casting costs are
+-- displayed and socially enforced rather than consuming time cards.
+create or replace function public.play_card_v4(p_game_id uuid,p_password text,p_card_key text,p_copy_card_key text default null,p_cost_card_keys text[] default array[]::text[])
+returns uuid language plpgsql security definer set search_path=public,extensions as $$
+declare v_card jsonb;v_copy jsonb;v_effect text;v_kind text;v_duration integer;v_now timestamptz:=now();v_id uuid;v_title text;v_desc text;v_value integer;v_cost integer:=0;v_paid integer:=0;v_key text;v_pay jsonb;v_cost_kind text;v_cost_text text;
+begin
+  if not public._hider_password_ok(p_game_id,p_password) then raise exception 'Invalid hider password.';end if;
+  v_card:=public._get_held_card(p_game_id,p_card_key);if v_card is null then raise exception 'Card is not available in hand.';end if;
+  v_effect:=v_card->>'effect_key';v_kind:=v_card->>'card_kind';
+  if v_effect='duplicate' then
+    if p_copy_card_key is null then raise exception 'Choose a card to duplicate.';end if;
+    v_copy:=public._get_held_card(p_game_id,p_copy_card_key);if v_copy is null then raise exception 'Duplicate target is not available.';end if;
+    if v_copy->>'card_kind'='time_bonus' then
+      perform public._consume_held_card(p_game_id,p_card_key);
+      insert into public.private_card_uses(game_id,card_key,effect_key,value_int,metadata) values(p_game_id,p_card_key,'duplicate_bonus',(v_copy->>'value_int')::integer,jsonb_build_object('copied_card_key',p_copy_card_key,'copied_title',v_copy->>'title')) returning id into v_id;return v_id;
+    elsif v_copy->>'card_kind'='curse' then v_card:=v_copy;v_effect:=v_copy->>'effect_key';v_kind:='curse';
+    else raise exception 'Duplicate currently supports time bonuses and curses.';end if;
+  elsif v_kind<>'curse' then raise exception 'This card is used elsewhere in the interface.';end if;
+
+  v_cost:=coalesce(nullif(v_card->>'cast_cost_minutes','')::integer,0);
+  v_cost_kind:=coalesce(nullif(v_card->>'cast_cost_kind',''),case when v_cost>0 then 'time' else 'none' end);
+  v_cost_text:=nullif(v_card->>'cast_cost_text','');
+  if v_cost_kind='time' and v_cost>0 then
+    if coalesce(array_length(p_cost_card_keys,1),0)=0 then raise exception 'Choose time-bonus cards to pay the casting cost.';end if;
+    foreach v_key in array p_cost_card_keys loop
+      v_pay:=public._get_held_card(p_game_id,v_key);
+      if v_pay is null or v_pay->>'card_kind'<>'time_bonus' then raise exception 'Casting costs can only be paid with held time-bonus cards.';end if;
+      v_paid:=v_paid+coalesce((v_pay->>'value_int')::integer,0);
+    end loop;
+    if v_paid<v_cost then raise exception 'Selected time bonuses do not cover the casting cost.';end if;
+  end if;
+
+  perform public._consume_held_card(p_game_id,p_card_key);
+  if v_cost_kind='time' then foreach v_key in array p_cost_card_keys loop perform public._consume_held_card(p_game_id,v_key);end loop; end if;
+  v_title:=v_card->>'title';v_desc:=v_card->>'description';v_duration:=nullif(v_card->>'duration_seconds','')::integer;v_value:=nullif(v_card->>'value_int','')::integer;
+  insert into public.game_actions(game_id,actor,kind,payload) values(p_game_id,'hider','curse_play',jsonb_build_object(
+    'source_card_key',p_card_key,'effect_key',v_effect,'title',v_title,'description',v_desc,
+    'duration_seconds',v_duration,'value_int',v_value,'starts_at',v_now,
+    'ends_at',case when v_duration is null then null else v_now+make_interval(secs=>v_duration) end,
+    'copied_from',p_copy_card_key,'cast_cost_kind',v_cost_kind,'cast_cost_minutes',v_cost,
+    'cast_cost_text',v_cost_text,'cast_paid_minutes',v_paid,'cast_cards',to_jsonb(p_cost_card_keys))) returning id into v_id;
+  return v_id;
+end;$$;
+
+grant execute on function public.play_card_v4(uuid,text,text,text,text[]) to anon,authenticated;
+
+
+-- Hide & Seek: Vienna v3.9.0
+-- Catalogue counts for cards, question catalogue/editor, and finite-deck expansion.
+-- Run ONCE after v3.8.0.
+
+-- ---------------------------------------------------------------------------
+-- Card catalogue: one row per card TYPE, with a physical-copy count.
+-- ---------------------------------------------------------------------------
+alter table public.curse_cards add column if not exists deck_count integer not null default 1;
+alter table public.curse_cards drop constraint if exists curse_cards_deck_count_check;
+alter table public.curse_cards add constraint curse_cards_deck_count_check check (deck_count between 0 and 50);
+
+-- Collapse old physical duplicate rows that have identical rules into one catalogue
+-- definition. Existing already-drawn JSON snapshots remain self-contained.
+create temporary table _hns_card_groups as
+select
+  min(card_key) as keep_key,
+  count(*) filter (where coalesce(enabled,true))::integer as copies,
+  title,description,duration_seconds,card_kind,effect_key,value_int,
+  coalesce(cast_cost_minutes,0) as cast_cost_minutes,
+  coalesce(cast_cost_kind,'none') as cast_cost_kind,
+  coalesce(cast_cost_text,'') as cast_cost_text,
+  bool_or(coalesce(enabled,true)) as any_enabled
+from public.curse_cards
+group by title,description,duration_seconds,card_kind,effect_key,value_int,
+         coalesce(cast_cost_minutes,0),coalesce(cast_cost_kind,'none'),coalesce(cast_cost_text,'');
+
+update public.curse_cards c
+set deck_count=g.copies,
+    enabled=g.any_enabled
+from _hns_card_groups g
+where c.card_key=g.keep_key;
+
+delete from public.curse_cards c
+using _hns_card_groups g
+where c.card_key<>g.keep_key
+  and c.title=g.title
+  and c.description=g.description
+  and c.duration_seconds is not distinct from g.duration_seconds
+  and c.card_kind=g.card_kind
+  and c.effect_key is not distinct from g.effect_key
+  and c.value_int is not distinct from g.value_int
+  and coalesce(c.cast_cost_minutes,0)=g.cast_cost_minutes
+  and coalesce(c.cast_cost_kind,'none')=g.cast_cost_kind
+  and coalesce(c.cast_cost_text,'')=g.cast_cost_text;
+
+update public.curse_cards set enabled=(deck_count>0);
+
+drop table if exists _hns_card_groups;
+
+-- Reset only the undrawn pile. Held cards remain in curse_draws snapshots.
+delete from public.game_card_state;
+
+create or replace function public.admin_list_cards_v2(p_password text)
+returns table(
+  card_key text,title text,description text,duration_seconds integer,
+  card_kind text,effect_key text,value_int integer,cast_cost_minutes integer,
+  cast_cost_kind text,cast_cost_text text,enabled boolean,deck_count integer,
+  special_engine boolean
+)
+language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then
+    perform pg_sleep(0.35); raise exception 'Invalid developer password.';
+  end if;
+  return query
+  select c.card_key,c.title,c.description,c.duration_seconds,c.card_kind,c.effect_key,c.value_int,
+         c.cast_cost_minutes,c.cast_cost_kind,c.cast_cost_text,c.enabled,c.deck_count,
+         (c.effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question')) as special_engine
+  from public.curse_cards c
+  order by
+    case when c.effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question') then 9
+         when c.card_kind='time_bonus' then 1 when c.card_kind='curse' then 2 else 3 end,
+    c.title,c.card_key;
+end;$$;
+grant execute on function public.admin_list_cards_v2(text) to anon,authenticated;
+
+create or replace function public.admin_save_card_v2(
+  p_password text,p_card_key text,p_title text,p_description text,
+  p_duration_seconds integer,p_card_kind text,p_effect_key text,p_value_int integer,
+  p_cast_cost_kind text,p_cast_cost_minutes integer,p_cast_cost_text text,
+  p_deck_count integer
+) returns text
+language plpgsql security definer set search_path=public,extensions as $$
+declare v_key text;v_special boolean;
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(0.35);raise exception 'Invalid developer password.';end if;
+  if char_length(trim(coalesce(p_title,''))) not between 1 and 120 then raise exception 'Card title must be 1-120 characters.';end if;
+  if char_length(trim(coalesce(p_description,''))) not between 1 and 1200 then raise exception 'Card text must be 1-1200 characters.';end if;
+  if p_card_kind not in ('curse','powerup','time_bonus','time_trap') then raise exception 'Invalid card type.';end if;
+  if p_cast_cost_kind not in ('none','time','custom') then raise exception 'Invalid casting-cost type.';end if;
+  if coalesce(p_deck_count,-1) not between 0 and 50 then raise exception 'Deck count must be 0-50.';end if;
+  if p_duration_seconds is not null and p_duration_seconds<0 then raise exception 'Invalid duration.';end if;
+  if p_cast_cost_kind='time' and (coalesce(p_cast_cost_minutes,0)<=0 or p_cast_cost_minutes%5<>0 or p_cast_cost_minutes>120) then raise exception 'Time casting cost must be 5-120 minutes in 5-minute steps.';end if;
+  if p_cast_cost_kind='custom' and char_length(trim(coalesce(p_cast_cost_text,'')))<1 then raise exception 'Enter the custom casting cost.';end if;
+
+  v_key=nullif(trim(coalesce(p_card_key,'')),'');
+  if v_key is null then v_key='custom-'||replace(extensions.gen_random_uuid()::text,'-',''); end if;
+
+  -- Engine-driven cards keep their effect key/type/value. Their presentation and
+  -- copy count can still be changed safely.
+  select effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question') into v_special
+  from public.curse_cards where card_key=v_key;
+  if coalesce(v_special,false) then
+    update public.curse_cards set
+      title=trim(p_title),description=trim(p_description),duration_seconds=p_duration_seconds,
+      cast_cost_minutes=case when p_cast_cost_kind='time' then p_cast_cost_minutes else 0 end,
+      cast_cost_kind=p_cast_cost_kind,
+      cast_cost_text=case when p_cast_cost_kind='custom' then trim(p_cast_cost_text) else null end,
+      deck_count=p_deck_count,enabled=(p_deck_count>0)
+    where card_key=v_key;
+    return v_key;
+  end if;
+
+  insert into public.curse_cards(
+    card_key,title,description,duration_seconds,card_kind,effect_key,value_int,
+    cast_cost_minutes,cast_cost_kind,cast_cost_text,enabled,deck_count
+  ) values(
+    v_key,trim(p_title),trim(p_description),p_duration_seconds,p_card_kind,
+    coalesce(nullif(trim(coalesce(p_effect_key,'')),''),'custom_rule'),p_value_int,
+    case when p_cast_cost_kind='time' then p_cast_cost_minutes else 0 end,
+    p_cast_cost_kind,case when p_cast_cost_kind='custom' then trim(p_cast_cost_text) else null end,
+    (p_deck_count>0),p_deck_count
+  ) on conflict(card_key) do update set
+    title=excluded.title,description=excluded.description,duration_seconds=excluded.duration_seconds,
+    card_kind=excluded.card_kind,effect_key=excluded.effect_key,value_int=excluded.value_int,
+    cast_cost_minutes=excluded.cast_cost_minutes,cast_cost_kind=excluded.cast_cost_kind,
+    cast_cost_text=excluded.cast_cost_text,enabled=excluded.enabled,deck_count=excluded.deck_count;
+  return v_key;
+end;$$;
+grant execute on function public.admin_save_card_v2(text,text,text,text,integer,text,text,integer,text,integer,text,integer) to anon,authenticated;
+
+-- Build a finite pile by expanding each catalogue definition deck_count times.
+-- Each physical copy gets a unique instance key, while catalog_key points back to
+-- its editable definition.
+create or replace function public._reshuffle_card_deck_v1(p_game_id uuid)
+returns integer language plpgsql security definer set search_path=public,extensions as $$
+declare v_deck jsonb;v_cycle integer;
+begin
+  with held as (
+    select e
+    from public.curse_draws d
+    cross join lateral jsonb_array_elements(d.cards) e
+    where d.game_id=p_game_id
+      and d.kept_card_keys ? (e->>'card_key')
+      and not(d.used_card_keys ? (e->>'card_key'))
+  ), available as (
+    select c.*,
+      greatest(0,c.deck_count-(
+        select count(*) from held h
+        where coalesce(h.e->>'catalog_key','')=c.card_key
+           or (
+             coalesce(h.e->>'catalog_key','')=''
+             and h.e->>'title'=c.title
+             and h.e->>'effect_key' is not distinct from c.effect_key
+             and coalesce(nullif(h.e->>'value_int','')::integer,-2147483648)=coalesce(c.value_int,-2147483648)
+           )
+      ))::integer as available_count
+    from public.curse_cards c
+    where c.enabled and c.deck_count>0
+  ), expanded as (
+    select a.card_key as catalog_key,extensions.gen_random_uuid()::text as instance_uuid
+    from available a
+    cross join lateral generate_series(1,a.available_count) g
+  )
+  select coalesce(jsonb_agg(catalog_key||'::'||instance_uuid order by random()),'[]'::jsonb) into v_deck
+  from expanded;
+
+  insert into public.game_card_state(game_id,cycle,deck,cursor,updated_at)
+  values(p_game_id,1,v_deck,0,now())
+  on conflict(game_id) do update set cycle=public.game_card_state.cycle+1,deck=excluded.deck,cursor=0,updated_at=now()
+  returning cycle into v_cycle;
+  return v_cycle;
+end;$$;
+
+create or replace function public._draw_cards_v4(p_game_id uuid,p_count integer)
+returns jsonb language plpgsql security definer set search_path=public,extensions as $$
+declare
+  v_result jsonb:='[]'::jsonb;v_state public.game_card_state%rowtype;
+  v_instance_key text;v_catalog_key text;v_card public.curse_cards%rowtype;
+begin
+  if p_count<=0 then return v_result; end if;
+  if not exists(select 1 from public.game_card_state where game_id=p_game_id) then perform public._reshuffle_card_deck_v1(p_game_id); end if;
+  while jsonb_array_length(v_result)<p_count loop
+    select * into v_state from public.game_card_state where game_id=p_game_id for update;
+    if v_state.cursor>=jsonb_array_length(v_state.deck) then
+      perform public._reshuffle_card_deck_v1(p_game_id);
+      select * into v_state from public.game_card_state where game_id=p_game_id for update;
+      if jsonb_array_length(v_state.deck)=0 then exit; end if;
+    end if;
+    v_instance_key:=v_state.deck->>v_state.cursor;
+    update public.game_card_state set cursor=cursor+1,updated_at=now() where game_id=p_game_id;
+    v_catalog_key:=split_part(v_instance_key,'::',1);
+    select * into v_card from public.curse_cards where card_key=v_catalog_key and enabled and deck_count>0;
+    if found then
+      v_result:=v_result||jsonb_build_array(jsonb_build_object(
+        'card_key',v_instance_key,'catalog_key',v_card.card_key,
+        'title',v_card.title,'description',v_card.description,
+        'duration_seconds',v_card.duration_seconds,'card_kind',v_card.card_kind,
+        'effect_key',v_card.effect_key,'value_int',v_card.value_int,
+        'cast_cost_minutes',v_card.cast_cost_minutes,'cast_cost_kind',v_card.cast_cost_kind,
+        'cast_cost_text',v_card.cast_cost_text));
+    end if;
+  end loop;
+  return v_result;
+end;$$;
+
+-- ---------------------------------------------------------------------------
+-- Editable question catalogue.
+-- ---------------------------------------------------------------------------
+create table if not exists public.question_catalog(
+  question_key text primary key,
+  category text not null check(category in ('MIXED','RADAR','THERMOMETER','TENTACLES','PHOTO')),
+  title text not null,
+  description text not null default '',
+  question_kind text not null check(question_kind in ('radar','district','district_set','landmark_compare','directional','same_line','thermometer','tentacle','photo','street_shape')),
+  params jsonb not null default '{}'::jsonb check(jsonb_typeof(params)='object'),
+  endgame_only boolean not null default false,
+  enabled boolean not null default true,
+  sort_order integer not null default 100,
+  updated_at timestamptz not null default now()
+);
+alter table public.question_catalog enable row level security;
+drop policy if exists "question catalogue readable by everyone" on public.question_catalog;
+create policy "question catalogue readable by everyone" on public.question_catalog for select to anon,authenticated using(true);
+grant select on public.question_catalog to anon,authenticated;
+revoke insert,update,delete on public.question_catalog from anon,authenticated;
+
+insert into public.question_catalog(question_key,category,title,description,question_kind,params,endgame_only,sort_order) values
+('same-district','MIXED','Same District','Same Vienna district?','district','{}',false,10),
+('same-line','MIXED','On This U-/S-Bahn Line?','Choose a line. Is the hiding station served by it?','same_line','{}',false,20),
+('street-shape','MIXED','Current Street Shape','Receive a hand-drawn outline of the Hider''s nearest street.','street_shape','{}',true,30),
+('transdanubia','MIXED','In Mordor?','Is the target across the Danube in district 21 or 22?','district_set','{"districts":[21,22],"yes_label":"Yes","no_label":"No"}',false,40),
+('inner-districts','MIXED','Inner Districts?','Is the target in districts 1-9?','district_set','{"districts":[1,2,3,4,5,6,7,8,9],"yes_label":"Yes","no_label":"No"}',false,50),
+('stephansdom-benchmark','MIXED','Closer to Stephansdom?','Is the target closer to Stephansdom than you are?','landmark_compare','{"landmark_name":"Stephansdom","landmark":{"lat":48.20849,"lng":16.37208}}',false,60),
+('schoenbrunn-benchmark','MIXED','Closer to Schönbrunn?','Is the target closer to Schönbrunn Palace than you are?','landmark_compare','{"landmark_name":"Schönbrunn Palace","landmark":{"lat":48.18452,"lng":16.31217}}',false,70),
+('donauturm-benchmark','MIXED','Closer to Donauturm?','Is the target closer to Donauturm than you are?','landmark_compare','{"landmark_name":"Donauturm","landmark":{"lat":48.24035,"lng":16.41008}}',false,80),
+('riesenrad-benchmark','MIXED','Closer to the Riesenrad?','Is the target closer to the Wiener Riesenrad than you are?','landmark_compare','{"landmark_name":"Wiener Riesenrad","landmark":{"lat":48.21667,"lng":16.39588}}',false,90),
+('north-of-me','MIXED','North of Me?','Is the target north of your position?','directional','{"axis":"lat","positive_label":"North","negative_label":"South"}',false,100),
+('east-of-me','MIXED','East of Me?','Is the target east of your position?','directional','{"axis":"lng","positive_label":"East","negative_label":"West"}',false,110),
+('radar-20000','RADAR','20 km Radar','Is the target within 20 km of this location?','radar','{"radius_m":20000}',false,200),
+('radar-10000','RADAR','10 km Radar','Is the target within 10 km of this location?','radar','{"radius_m":10000}',false,210),
+('radar-5000','RADAR','5 km Radar','Is the target within 5 km of this location?','radar','{"radius_m":5000}',false,220),
+('radar-1000','RADAR','1 km Radar','Is the target within 1 km of this location?','radar','{"radius_m":1000}',false,230),
+('radar-500','RADAR','500 m Radar','Is the target within 500 m of this location?','radar','{"radius_m":500}',false,240),
+('radar-100','RADAR','100 m Radar','Is the target within 100 m of this location?','radar','{"radius_m":100}',false,250),
+('thermo-250','THERMOMETER','250 m Thermometer','Start here; after moving at least 250 m ask whether you are warmer.','thermometer','{"min_travel_m":250}',false,300),
+('thermo-500','THERMOMETER','500 m Thermometer','Start here; after moving at least 500 m ask whether you are warmer.','thermometer','{"min_travel_m":500}',false,310),
+('thermo-2000','THERMOMETER','2 km Thermometer','Start here; after moving at least 2 km ask whether you are warmer.','thermometer','{"min_travel_m":2000}',false,320),
+('tentacle-museums','TENTACLES','Museums','5 km Tentacle.','tentacle','{"poi_type":"museum"}',true,400),
+('tentacle-parks','TENTACLES','Parks','5 km Tentacle.','tentacle','{"poi_type":"park"}',true,410),
+('tentacle-libraries','TENTACLES','Libraries','5 km Tentacle.','tentacle','{"poi_type":"library"}',true,420),
+('tentacle-cinemas','TENTACLES','Movie Theaters','5 km Tentacle.','tentacle','{"poi_type":"cinema"}',true,430),
+('tentacle-hospitals','TENTACLES','Hospitals','5 km Tentacle.','tentacle','{"poi_type":"hospital"}',true,440),
+('tentacle-cemeteries','TENTACLES','Cemeteries / Graveyards','5 km Tentacle.','tentacle','{"poi_type":"cemetery"}',true,450),
+('tentacle-churches','TENTACLES','Churches','5 km Tentacle.','tentacle','{"poi_type":"church"}',true,460),
+('tentacle-zoos','TENTACLES','Zoos / Aquariums','5 km Tentacle.','tentacle','{"poi_type":"zoo"}',true,470),
+('photo-water','PHOTO','Biggest body of water','Send a photo of the biggest body of water visible from the hiding area.','photo','{"photo_prompt":"Biggest body of water"}',false,500),
+('photo-structure','PHOTO','Highest visible structure','Send a photo of the highest visible structure.','photo','{"photo_prompt":"Highest visible structure"}',false,510),
+('photo-selfie','PHOTO','Selfie','Send a current selfie from the hiding location.','photo','{"photo_prompt":"Selfie"}',false,520),
+('photo-four-houses','PHOTO','At least 4 houses in one image','One photo with at least four houses.','photo','{"photo_prompt":"At least 4 houses in one image"}',false,530),
+('photo-lamp','PHOTO','Closest street light','Photograph the closest street light or lamp to the hiding spot.','photo','{"photo_prompt":"Closest street light / lamp"}',false,540),
+('photo-up','PHOTO','View straight up','Photograph the view straight upward.','photo','{"photo_prompt":"View straight up"}',false,550)
+on conflict(question_key) do nothing;
+
+create or replace function public.admin_list_questions_v1(p_password text)
+returns table(
+  question_key text,category text,title text,description text,question_kind text,
+  params jsonb,endgame_only boolean,enabled boolean,sort_order integer,updated_at timestamptz
+)
+language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(0.35);raise exception 'Invalid developer password.';end if;
+  return query select q.question_key,q.category,q.title,q.description,q.question_kind,q.params,q.endgame_only,q.enabled,q.sort_order,q.updated_at
+  from public.question_catalog q order by q.sort_order,q.title;
+end;$$;
+grant execute on function public.admin_list_questions_v1(text) to anon,authenticated;
+
+create or replace function public.admin_save_question_v1(
+  p_password text,p_question_key text,p_category text,p_title text,p_description text,
+  p_question_kind text,p_params jsonb,p_endgame_only boolean,p_enabled boolean,p_sort_order integer
+) returns text
+language plpgsql security definer set search_path=public,extensions as $$
+declare v_key text;
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(0.35);raise exception 'Invalid developer password.';end if;
+  if p_category not in ('MIXED','RADAR','THERMOMETER','TENTACLES','PHOTO') then raise exception 'Invalid question category.';end if;
+  if p_question_kind not in ('radar','district','district_set','landmark_compare','directional','same_line','thermometer','tentacle','photo','street_shape') then raise exception 'Invalid question rule type.';end if;
+  if jsonb_typeof(coalesce(p_params,'{}'::jsonb))<>'object' then raise exception 'Question parameters must be a JSON object.';end if;
+  if char_length(trim(coalesce(p_title,''))) not between 1 and 120 then raise exception 'Question title must be 1-120 characters.';end if;
+  if char_length(coalesce(p_description,''))>800 then raise exception 'Question text is too long.';end if;
+
+  v_key=nullif(trim(coalesce(p_question_key,'')),'');
+  if v_key is null then v_key='custom-'||replace(extensions.gen_random_uuid()::text,'-','');end if;
+  insert into public.question_catalog(question_key,category,title,description,question_kind,params,endgame_only,enabled,sort_order,updated_at)
+  values(v_key,p_category,trim(p_title),trim(coalesce(p_description,'')),p_question_kind,coalesce(p_params,'{}'::jsonb),coalesce(p_endgame_only,false),coalesce(p_enabled,true),coalesce(p_sort_order,100),now())
+  on conflict(question_key) do update set category=excluded.category,title=excluded.title,description=excluded.description,
+    question_kind=excluded.question_kind,params=excluded.params,endgame_only=excluded.endgame_only,enabled=excluded.enabled,
+    sort_order=excluded.sort_order,updated_at=now();
+  return v_key;
+end;$$;
+grant execute on function public.admin_save_question_v1(text,text,text,text,text,text,jsonb,boolean,boolean,integer) to anon,authenticated;
+
+create or replace function public.admin_delete_question_v1(p_password text,p_question_key text)
+returns boolean language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(0.35);raise exception 'Invalid developer password.';end if;
+  delete from public.question_catalog where question_key=p_question_key;
+  return found;
+end;$$;
+grant execute on function public.admin_delete_question_v1(text,text) to anon,authenticated;
+
+
+-- Hide & Seek: Vienna v3.10.0
+-- New casting-cost modes + interactive Vienna curses.
+-- Run ONCE after v3.9.0.
+
+-- ---------------------------------------------------------------------------
+-- Casting costs can now consume another held card.
+-- ---------------------------------------------------------------------------
+alter table public.curse_cards add column if not exists cast_cost_category text;
+
+alter table public.curse_cards drop constraint if exists curse_cards_cast_cost_kind_check;
+alter table public.curse_cards add constraint curse_cards_cast_cost_kind_check
+  check (cast_cost_kind in ('none','time','custom','discard_any','discard_category'));
+
+alter table public.curse_cards drop constraint if exists curse_cards_cast_cost_category_check;
+alter table public.curse_cards add constraint curse_cards_cast_cost_category_check
+  check (cast_cost_category is null or cast_cost_category in ('curse','veto','time_bonus','powerup','time_trap'));
+
+create or replace function public.admin_list_cards_v3(p_password text)
+returns table(
+  card_key text,title text,description text,duration_seconds integer,
+  card_kind text,effect_key text,value_int integer,cast_cost_minutes integer,
+  cast_cost_kind text,cast_cost_text text,cast_cost_category text,enabled boolean,deck_count integer,
+  special_engine boolean
+)
+language plpgsql security definer set search_path=public,extensions as $$
+begin
+  if not public._admin_password_ok(p_password) then
+    perform pg_sleep(0.35); raise exception 'Invalid developer password.';
+  end if;
+  return query
+  select c.card_key,c.title,c.description,c.duration_seconds,c.card_kind,c.effect_key,c.value_int,
+         c.cast_cost_minutes,c.cast_cost_kind,c.cast_cost_text,c.cast_cost_category,c.enabled,c.deck_count,
+         (c.effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question')) as special_engine
+  from public.curse_cards c
+  order by
+    case when c.effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question') then 9
+    when c.card_kind='time_bonus' then 1 when c.card_kind='curse' then 2 else 3 end,
+    c.title,c.card_key;
+end;$$;
+grant execute on function public.admin_list_cards_v3(text) to anon,authenticated;
+
+create or replace function public.admin_save_card_v3(
+  p_password text,p_card_key text,p_title text,p_description text,
+  p_duration_seconds integer,p_card_kind text,p_effect_key text,p_value_int integer,
+  p_cast_cost_kind text,p_cast_cost_minutes integer,p_cast_cost_text text,p_cast_cost_category text,
+  p_deck_count integer
+) returns text
+language plpgsql security definer set search_path=public,extensions as $$
+declare v_key text;v_special boolean;
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(0.35);raise exception 'Invalid developer password.';end if;
+  if char_length(trim(coalesce(p_title,''))) not between 1 and 120 then raise exception 'Card title must be 1-120 characters.';end if;
+  if char_length(trim(coalesce(p_description,''))) not between 1 and 1200 then raise exception 'Card text must be 1-1200 characters.';end if;
+  if p_card_kind not in ('curse','powerup','time_bonus','time_trap') then raise exception 'Invalid card type.';end if;
+  if p_cast_cost_kind not in ('none','time','custom','discard_any','discard_category') then raise exception 'Invalid casting-cost type.';end if;
+  if coalesce(p_deck_count,-1) not between 0 and 50 then raise exception 'Deck count must be 0-50.';end if;
+  if p_duration_seconds is not null and p_duration_seconds<0 then raise exception 'Invalid duration.';end if;
+  if p_cast_cost_kind='time' and (coalesce(p_cast_cost_minutes,0)<=0 or p_cast_cost_minutes%5<>0 or p_cast_cost_minutes>120) then raise exception 'Time casting cost must be 5-120 minutes in 5-minute steps.';end if;
+  if p_cast_cost_kind='custom' and char_length(trim(coalesce(p_cast_cost_text,'')))<1 then raise exception 'Enter the custom casting cost.';end if;
+  if p_cast_cost_kind='discard_category' and coalesce(p_cast_cost_category,'') not in ('curse','veto','time_bonus','powerup','time_trap') then raise exception 'Choose a discard-card category.';end if;
+
+  v_key=nullif(trim(coalesce(p_card_key,'')),'');
+  if v_key is null then v_key='custom-'||replace(extensions.gen_random_uuid()::text,'-',''); end if;
+
+  select effect_key in ('prosperous_home','duplicate','reshuffle_deck','time_trap','veto_question') into v_special
+  from public.curse_cards where card_key=v_key;
+
+  if coalesce(v_special,false) then
+    update public.curse_cards set
+      title=trim(p_title),description=trim(p_description),duration_seconds=p_duration_seconds,
+      cast_cost_minutes=case when p_cast_cost_kind='time' then p_cast_cost_minutes else 0 end,
+      cast_cost_kind=p_cast_cost_kind,
+      cast_cost_text=case when p_cast_cost_kind='custom' then trim(p_cast_cost_text) else null end,
+      cast_cost_category=case when p_cast_cost_kind='discard_category' then p_cast_cost_category else null end,
+      deck_count=p_deck_count,enabled=(p_deck_count>0)
+    where card_key=v_key;
+    return v_key;
+  end if;
+
+  insert into public.curse_cards(
+    card_key,title,description,duration_seconds,card_kind,effect_key,value_int,
+    cast_cost_minutes,cast_cost_kind,cast_cost_text,cast_cost_category,enabled,deck_count
+  ) values(
+    v_key,trim(p_title),trim(p_description),p_duration_seconds,p_card_kind,
+    coalesce(nullif(trim(coalesce(p_effect_key,'')),''),'custom_rule'),p_value_int,
+    case when p_cast_cost_kind='time' then p_cast_cost_minutes else 0 end,
+    p_cast_cost_kind,case when p_cast_cost_kind='custom' then trim(p_cast_cost_text) else null end,
+    case when p_cast_cost_kind='discard_category' then p_cast_cost_category else null end,
+    (p_deck_count>0),p_deck_count
+  ) on conflict(card_key) do update set
+    title=excluded.title,description=excluded.description,duration_seconds=excluded.duration_seconds,
+    card_kind=excluded.card_kind,effect_key=excluded.effect_key,value_int=excluded.value_int,
+    cast_cost_minutes=excluded.cast_cost_minutes,cast_cost_kind=excluded.cast_cost_kind,
+    cast_cost_text=excluded.cast_cost_text,cast_cost_category=excluded.cast_cost_category,
+    enabled=excluded.enabled,deck_count=excluded.deck_count;
+  return v_key;
+end;$$;
+grant execute on function public.admin_save_card_v3(text,text,text,text,integer,text,text,integer,text,integer,text,text,integer) to anon,authenticated;
+
+-- Draw snapshots include the discard-category rule.
+create or replace function public._draw_cards_v4(p_game_id uuid,p_count integer)
+returns jsonb language plpgsql security definer set search_path=public,extensions as $$
+declare
+  v_result jsonb:='[]'::jsonb;v_state public.game_card_state%rowtype;
+  v_instance_key text;v_catalog_key text;v_card public.curse_cards%rowtype;
+begin
+  if p_count<=0 then return v_result; end if;
+  if not exists(select 1 from public.game_card_state where game_id=p_game_id) then perform public._reshuffle_card_deck_v1(p_game_id); end if;
+  while jsonb_array_length(v_result)<p_count loop
+    select * into v_state from public.game_card_state where game_id=p_game_id for update;
+    if v_state.cursor>=jsonb_array_length(v_state.deck) then
+      perform public._reshuffle_card_deck_v1(p_game_id);
+      select * into v_state from public.game_card_state where game_id=p_game_id for update;
+      if jsonb_array_length(v_state.deck)=0 then exit; end if;
+    end if;
+    v_instance_key:=v_state.deck->>v_state.cursor;
+    update public.game_card_state set cursor=cursor+1,updated_at=now() where game_id=p_game_id;
+    v_catalog_key:=split_part(v_instance_key,'::',1);
+    select * into v_card from public.curse_cards where card_key=v_catalog_key and enabled and deck_count>0;
+    if found then
+      v_result:=v_result||jsonb_build_array(jsonb_build_object(
+        'card_key',v_instance_key,'catalog_key',v_card.card_key,'title',v_card.title,'description',v_card.description,
+        'duration_seconds',v_card.duration_seconds,'card_kind',v_card.card_kind,
+        'effect_key',v_card.effect_key,'value_int',v_card.value_int,
+        'cast_cost_minutes',v_card.cast_cost_minutes,'cast_cost_kind',v_card.cast_cost_kind,
+        'cast_cost_text',v_card.cast_cost_text,'cast_cost_category',v_card.cast_cost_category));
+    end if;
+  end loop;
+  return v_result;
+end;$$;
+
+create or replace function public._held_card_matches_category(p_card jsonb,p_category text)
+returns boolean language sql immutable as $$
+  select case p_category
+    when 'curse' then p_card->>'card_kind'='curse'
+    when 'veto' then p_card->>'effect_key'='veto_question'
+    when 'time_bonus' then p_card->>'card_kind'='time_bonus'
+    when 'powerup' then p_card->>'card_kind'='powerup'
+    when 'time_trap' then p_card->>'effect_key'='time_trap' or p_card->>'card_kind'='time_trap'
+    else false end;
+$$;
+
+-- v5 adds effect payloads and discard-card casting costs.
+create or replace function public.play_card_v5(
+  p_game_id uuid,p_password text,p_card_key text,p_copy_card_key text default null,
+  p_cost_card_keys text[] default array[]::text[],p_effect_payload jsonb default '{}'::jsonb
+) returns uuid language plpgsql security definer set search_path=public,extensions as $$
+declare
+  v_card jsonb;v_copy jsonb;v_effect text;v_kind text;v_duration integer;v_now timestamptz:=now();v_id uuid;
+  v_title text;v_desc text;v_value integer;v_cost integer:=0;v_paid integer:=0;v_key text;v_pay jsonb;
+  v_cost_kind text;v_cost_text text;v_cost_category text;v_payload jsonb:=coalesce(p_effect_payload,'{}'::jsonb);
+  v_local timestamp;v_dow integer;v_t time;v_sidequest text;
+begin
+  if not public._hider_password_ok(p_game_id,p_password) then raise exception 'Invalid hider password.';end if;
+  v_card:=public._get_held_card(p_game_id,p_card_key);if v_card is null then raise exception 'Card is not available in hand.';end if;
+  v_effect:=v_card->>'effect_key';v_kind:=v_card->>'card_kind';
+
+  if v_effect='duplicate' then
+    if p_copy_card_key is null then raise exception 'Choose a card to duplicate.';end if;
+    v_copy:=public._get_held_card(p_game_id,p_copy_card_key);if v_copy is null then raise exception 'Duplicate target is not available.';end if;
+    if v_copy->>'card_kind'='time_bonus' then
+      perform public._consume_held_card(p_game_id,p_card_key);
+      insert into public.private_card_uses(game_id,card_key,effect_key,value_int,metadata)
+      values(p_game_id,p_card_key,'duplicate_bonus',(v_copy->>'value_int')::integer,jsonb_build_object('copied_card_key',p_copy_card_key,'copied_title',v_copy->>'title'))
+      returning id into v_id;return v_id;
+    elsif v_copy->>'card_kind'='curse' then v_card:=v_copy;v_effect:=v_copy->>'effect_key';v_kind:='curse';
+    else raise exception 'Duplicate currently supports time bonuses and curses.';end if;
+  elsif v_kind<>'curse' then raise exception 'This card is used elsewhere in the interface.';end if;
+
+  v_cost:=coalesce(nullif(v_card->>'cast_cost_minutes','')::integer,0);
+  v_cost_kind:=coalesce(nullif(v_card->>'cast_cost_kind',''),case when v_cost>0 then 'time' else 'none' end);
+  v_cost_text:=nullif(v_card->>'cast_cost_text','');
+  v_cost_category:=nullif(v_card->>'cast_cost_category','');
+
+  if v_cost_kind='time' and v_cost>0 then
+    if coalesce(array_length(p_cost_card_keys,1),0)=0 then raise exception 'Choose time-bonus cards to pay the casting cost.';end if;
+    foreach v_key in array p_cost_card_keys loop
+      if v_key=p_card_key or v_key=coalesce(p_copy_card_key,'') then raise exception 'The played/copied card cannot pay its own casting cost.';end if;
+      v_pay:=public._get_held_card(p_game_id,v_key);
+      if v_pay is null or v_pay->>'card_kind'<>'time_bonus' then raise exception 'Casting costs can only be paid with held time-bonus cards.';end if;
+      v_paid:=v_paid+coalesce((v_pay->>'value_int')::integer,0);
+    end loop;
+    if v_paid<v_cost then raise exception 'Selected time bonuses do not cover the casting cost.';end if;
+  elsif v_cost_kind in ('discard_any','discard_category') then
+    if coalesce(array_length(p_cost_card_keys,1),0)<>1 then raise exception 'Choose exactly one other held card to discard.';end if;
+    v_key:=p_cost_card_keys[1];
+    if v_key=p_card_key or v_key=coalesce(p_copy_card_key,'') then raise exception 'The played/copied card cannot pay its own casting cost.';end if;
+    v_pay:=public._get_held_card(p_game_id,v_key);if v_pay is null then raise exception 'Casting-cost card is not available in hand.';end if;
+    if v_cost_kind='discard_category' and not public._held_card_matches_category(v_pay,v_cost_category) then raise exception 'The selected card does not match the required discard category.';end if;
+  end if;
+
+  -- Effect-specific, server-owned rules.
+  if v_effect='deutsche_bahn' then
+    if coalesce(v_payload->>'blocked_line','') !~ '^[US][0-9]{1,2}$' then raise exception 'Choose the blocked U-/S-Bahn line.';end if;
+    v_duration:=1800;
+  elsif v_effect='side_quest' then
+    v_duration:=2700;
+    v_sidequest:=case floor(random()*10)::integer
+      when 0 then 'Find a public statue and recreate its pose as a team photo.'
+      when 1 then 'Find a playground. Every Seeker must use one piece of playground equipment.'
+      when 2 then 'Find a public fountain and take an unnecessarily dramatic team portrait.'
+      when 3 then 'Find an animal statue or sculpture and give it a name and backstory.'
+      when 4 then 'Ride three consecutive stops on a tram line you were not planning to use.'
+      when 5 then 'Find a bakery and unanimously choose one item that best represents Vienna.'
+      when 6 then 'Find a street named after a person and learn one fact about that person.'
+      when 7 then 'Find something red-white-red in public space and photograph the whole team with it.'
+      when 8 then 'Find a staircase with at least 20 steps and stage a heroic summit photo at the top.'
+      else 'Find a park bench with a view and record a 20-second fake tourism advertisement for Vienna.' end;
+    v_payload:=v_payload||jsonb_build_object('side_quest',v_sidequest);
+  elsif v_effect='wean_ned_schlecht_redn' then
+    v_local:=v_now at time zone 'Europe/Vienna';v_dow:=extract(isodow from v_local)::integer;v_t:=v_local::time;
+    if v_dow=1 or (v_dow=2 and v_t<time '12:00') then
+      v_duration:=3600;v_payload:=v_payload||jsonb_build_object('mode','work_hours');
+    else
+      v_duration:=null;v_payload:=v_payload||jsonb_build_object('mode','wine_hike');
+    end if;
+  elsif v_effect='haute_vollee' then v_duration:=900;
+  elsif v_effect='fiaker' then v_duration:=3600;
+  elsif v_effect='mordor_curse' then
+    if coalesce(v_payload->>'mode','') not in ('inside','outside') then raise exception 'Mordor curse needs the Seekers current side of the Danube.';end if;
+    v_duration:=1200;
+  elsif v_effect='broken_lift' then v_duration:=1800;
+  elsif v_effect='false_prophet' then v_duration:=1200;
+  else
+    v_duration:=nullif(v_card->>'duration_seconds','')::integer;
+  end if;
+
+  perform public._consume_held_card(p_game_id,p_card_key);
+  if v_cost_kind in ('time','discard_any','discard_category') then
+    foreach v_key in array p_cost_card_keys loop perform public._consume_held_card(p_game_id,v_key);end loop;
+  end if;
+
+  v_title:=v_card->>'title';v_desc:=v_card->>'description';v_value:=nullif(v_card->>'value_int','')::integer;
+  insert into public.game_actions(game_id,actor,kind,payload) values(
+    p_game_id,'hider','curse_play',
+    jsonb_build_object(
+      'source_card_key',p_card_key,'effect_key',v_effect,'title',v_title,'description',v_desc,
+      'duration_seconds',v_duration,'value_int',v_value,'starts_at',v_now,
+      'ends_at',case when v_duration is null then null else v_now+make_interval(secs=>v_duration) end,
+      'copied_from',p_copy_card_key,'cast_cost_kind',v_cost_kind,'cast_cost_minutes',v_cost,
+      'cast_cost_text',v_cost_text,'cast_cost_category',v_cost_category,'cast_paid_minutes',v_paid,
+      'cast_cards',to_jsonb(p_cost_card_keys)
+    ) || v_payload
+  ) returning id into v_id;
+  return v_id;
+end;$$;
+grant execute on function public.play_card_v5(uuid,text,text,text,text[],jsonb) to anon,authenticated;
+
+-- Seekers may manually clear only curses that explicitly use a completion checkbox.
+create or replace function public.complete_curse_v1(p_game_id uuid,p_curse_action_id uuid)
+returns uuid language plpgsql security definer set search_path=public as $$
+declare v_action public.game_actions%rowtype;v_effect text;v_id uuid;v_mode text;
+begin
+  select * into v_action from public.game_actions where id=p_curse_action_id and game_id=p_game_id and kind='curse_play' and is_active;
+  if not found then raise exception 'Active curse not found.';end if;
+  v_effect:=v_action.payload->>'effect_key';v_mode:=v_action.payload->>'mode';
+  if v_effect not in ('fiaker','schwarzkappler','wean_ned_schlecht_redn') then raise exception 'This curse cannot be manually completed.';end if;
+  if v_effect='wean_ned_schlecht_redn' and v_mode<>'wine_hike' then raise exception 'This version of the curse ends by timer.';end if;
+  if exists(select 1 from public.game_actions where game_id=p_game_id and kind='curse_complete' and parent_id=p_curse_action_id and is_active) then
+    raise exception 'Curse is already complete.';
+  end if;
+  insert into public.game_actions(game_id,actor,kind,parent_id,payload)
+  values(p_game_id,'seeker','curse_complete',p_curse_action_id,jsonb_build_object('effect_key',v_effect,'completed_at',now()))
+  returning id into v_id;
+  return v_id;
+end;$$;
+grant execute on function public.complete_curse_v1(uuid,uuid) to anon,authenticated;
+
+-- ---------------------------------------------------------------------------
+-- New curses. Existing cards are deliberately untouched.
+-- ---------------------------------------------------------------------------
+insert into public.curse_cards(
+  card_key,title,description,duration_seconds,card_kind,effect_key,value_int,
+  cast_cost_minutes,cast_cost_kind,cast_cost_text,cast_cost_category,enabled,deck_count
+) values
+('side-quest-vienna-1','Curse of the Side Quest','A completely unnecessary mission has appeared. Complete the randomly assigned side quest while the 45-minute curse timer runs.',2700,'curse','side_quest',null,0,'discard_category',null,'curse',true,1),
+('deutsche-bahn-vienna-1','Curse of the Deutsche Bahn','Your current line received an unexpected Gleisschaden due to 30 years of infrastructural neglect. We, the Deutsche Bahn would like to apologize for this unforseeable interruption. Get off your mode of transportation at the next possible stop. Your line is blocked for 30 minutes and cannot be used.',1800,'curse','deutsche_bahn',null,0,'none',null,null,true,1),
+('wean-ned-schlecht-redn-vienna-1','Curse of the ''I lass mir mei Wean ned schlecht redn''','If its already past Tuesday noon, visit the start of any of the Wien Weinwanderwege. If its before before Tuesday noon, you have to hault for 1h as its work hours.',null,'curse','wean_ned_schlecht_redn',null,40,'time',null,null,true,1),
+('haute-vollee-vienna-1','Curse of the Haute Vollee','As peasents and cretins you are not allowed to enter the high society (and Asian tourism) areas. Stay out of 1., 18., and 19. Bezirk for 15 minutes.',900,'curse','haute_vollee',null,15,'time',null,null,true,1),
+('one-ring-vienna-1','Curse of the One Ring','They all were deceived as another ring was forged. You cannot cross the Ringstrasse in any direction with public transportation. On foot you may cross it, but only when traversing at least 250m along it.',null,'curse','one_ring',null,10,'time',null,null,true,1),
+('schwarzkappler-vienna-1','Curse of the Schwarzkappler','Seekers must leave their current transportation if currently on any and go to the ticket machine to buy a ticket before continuing their journey.',null,'curse','schwarzkappler',null,5,'time',null,null,true,1),
+('wiener-grantler-vienna-1','Curse of the Wiener Grantler','Until the next question, the Seekers may only communicate in exaggeratedly grumpy complaints about Vienna. If anyone says something sincerely positive, the team must stop for 2 minutes.',null,'curse','wiener_grantler',null,5,'time',null,null,true,1),
+('fiaker-vienna-1','Curse of the Fiaker','Seekers must spot a Fiaker horse carriage before being allowed to ask any more questions. Check the curse off when you spot one. It automatically lifts after 1 hour.',3600,'curse','fiaker',null,15,'time',null,null,true,1),
+('mordor-curse-vienna-1','Curse of Mordor','If the Seekers are already in districts 21 or 22, they must remain in Mordor for 20 minutes. Otherwise, they may not enter districts 21 or 22 for 20 minutes.',1200,'curse','mordor_curse',null,15,'time',null,null,true,1),
+('broken-lift-vienna-1','Curse of the Broken Lift','Elevators are forbidden for 30 minutes. Stairs and escalators only.',1800,'curse','broken_lift',null,5,'time',null,null,true,1),
+('gemeindebau-vienna-1','Curse of the Gemeindebau','Before asking another question, find and photograph a Gemeindebau or an obvious municipal housing complex.',null,'curse','gemeindebau',null,5,'time',null,null,true,1),
+('quick-escalation-vienna-1','Curse of Quick Escalation','Seekers must until the end of the run deliberately stand on the left side of any escalater they might use.',null,'curse','quick_escalation',null,0,'custom','The hider must spot a person standing on the left side of the escalator to play the curse.',null,true,1),
+('false-prophet-vienna-1','Curse of the False Prophet','One Seeker becomes the Prophet for 20 minutes. Only the Prophet may decide which direction the team travels, but the Prophet may not look at the map. Everyone else may see the map but can answer the Prophet only with yes/no.',1200,'curse','false_prophet',null,15,'time',null,null,true,1)
+on conflict(card_key) do nothing;
+
+
+-- Hide & Seek: Vienna v3.10.1
+-- Duplicate hotfix: Duplicate now creates a genuine second held card instance.
+-- Run once after v3.10.0.
+
+-- Held-card lookup now also understands active virtual copies created by Duplicate.
+create or replace function public._get_held_card(p_game_id uuid,p_card_key text)
+returns jsonb language sql stable security definer set search_path=public as $$
+  select q.card
+  from (
+    select e as card,1 as ord
+    from public.curse_draws d
+    cross join lateral jsonb_array_elements(d.cards) e
+    where d.game_id=p_game_id
+      and d.kept_card_keys ? p_card_key
+      and not (d.used_card_keys ? p_card_key)
+      and e->>'card_key'=p_card_key
+    union all
+    select u.metadata->'card' as card,2 as ord
+    from public.private_card_uses u
+    where u.game_id=p_game_id
+      and u.effect_key='duplicate_copy'
+      and u.is_active
+      and u.card_key=p_card_key
+      and jsonb_typeof(u.metadata->'card')='object'
+  ) q
+  order by q.ord
+  limit 1;
+$$;
+
+-- Consuming a held card now consumes either an ordinary drawn card or a Duplicate copy.
+create or replace function public._consume_held_card(p_game_id uuid,p_card_key text)
+returns boolean language plpgsql security definer set search_path=public as $$
+begin
+  update public.curse_draws
+  set used_card_keys=used_card_keys||jsonb_build_array(p_card_key)
+  where game_id=p_game_id
+    and kept_card_keys ? p_card_key
+    and not (used_card_keys ? p_card_key);
+  if found then return true; end if;
+
+  update public.private_card_uses
+  set is_active=false
+  where game_id=p_game_id
+    and effect_key='duplicate_copy'
+    and card_key=p_card_key
+    and is_active;
+  return found;
+end;$$;
+
+-- Correct Duplicate behavior:
+-- consume Duplicate itself, leave the source card untouched, and add a new independent
+-- copy to the private Hider hand. The copied card is only played/spent later.
+create or replace function public.use_duplicate_v1(
+  p_game_id uuid,p_password text,p_duplicate_card_key text,p_copy_card_key text
+) returns text
+language plpgsql security definer set search_path=public,extensions as $$
+declare
+  v_duplicate jsonb;v_copy jsonb;v_new_key text;v_snapshot jsonb;v_id uuid;
+begin
+  if not public._hider_password_ok(p_game_id,p_password) then
+    raise exception 'Invalid hider password.';
+  end if;
+
+  v_duplicate:=public._get_held_card(p_game_id,p_duplicate_card_key);
+  if v_duplicate is null or v_duplicate->>'effect_key'<>'duplicate' then
+    raise exception 'Duplicate card is not available in hand.';
+  end if;
+  if p_duplicate_card_key=p_copy_card_key then
+    raise exception 'Duplicate cannot copy itself.';
+  end if;
+
+  v_copy:=public._get_held_card(p_game_id,p_copy_card_key);
+  if v_copy is null then raise exception 'Card to copy is not available in hand.'; end if;
+  if coalesce(v_copy->>'card_kind','') not in ('time_bonus','curse') then
+    raise exception 'Duplicate currently supports time bonuses and curses.';
+  end if;
+
+  v_new_key:='duplicate-copy-'||gen_random_uuid()::text;
+  v_snapshot:=v_copy||jsonb_build_object(
+    'card_key',v_new_key,
+    'duplicated_from',p_copy_card_key
+  );
+
+  if not public._consume_held_card(p_game_id,p_duplicate_card_key) then
+    raise exception 'Could not consume Duplicate card.';
+  end if;
+
+  insert into public.private_card_uses(game_id,card_key,effect_key,value_int,metadata,is_active)
+  values(
+    p_game_id,v_new_key,'duplicate_copy',nullif(v_copy->>'value_int','')::integer,
+    jsonb_build_object(
+      'copied_card_key',p_copy_card_key,
+      'copied_title',v_copy->>'title',
+      'source_duplicate_card_key',p_duplicate_card_key,
+      'card',v_snapshot
+    ),true
+  ) returning id into v_id;
+
+  return v_new_key;
+end;$$;
+grant execute on function public.use_duplicate_v1(uuid,text,text,text) to anon,authenticated;
+
+-- Final scoring now counts active duplicated time-bonus cards as ordinary held bonuses.
+-- Legacy duplicate_bonus rows from pre-v3.10.1 games are still counted too.
+create or replace function public.finish_game_v1(
+  p_game_id uuid,p_actor text,p_password text default null
+) returns table(
+  raw_seconds bigint,held_bonus_minutes integer,trap_bonus_minutes integer,
+  penalty_minutes integer,final_seconds bigint,finished_at timestamptz
+)
+language plpgsql security definer set search_path=public,extensions as $$
+declare
+  v_game public.games%rowtype;v_now timestamptz:=now();v_raw bigint;
+  v_held integer:=0;v_dup integer:=0;v_virtual integer:=0;v_traps integer:=0;v_penalty integer:=0;v_final bigint;
+begin
+  if p_actor not in ('hider','seeker') then raise exception 'Invalid actor.'; end if;
+  if p_actor='hider' and not public._hider_password_ok(p_game_id,p_password) then raise exception 'Invalid hider password.'; end if;
+  select * into v_game from public.games where id=p_game_id for update;
+  if not found then raise exception 'Game not found.'; end if;
+  if v_game.status='finished' then
+    return query select coalesce(v_game.final_raw_seconds,v_game.clock_elapsed_seconds),coalesce(v_game.final_bonus_minutes,0),coalesce(v_game.final_trap_minutes,0),coalesce(v_game.final_penalty_minutes,0),coalesce(v_game.final_score_seconds,v_game.clock_elapsed_seconds),v_game.finished_at;
+    return;
+  end if;
+  v_raw:=coalesce(v_game.clock_elapsed_seconds,0);
+  if v_game.clock_running and v_game.clock_started_at is not null then
+    v_raw:=v_raw+greatest(0,floor(extract(epoch from (v_now-v_game.clock_started_at)))::bigint);
+  end if;
+
+  select coalesce(sum(coalesce(nullif(e->>'value_int','')::integer,0)),0)::integer into v_held
+  from public.curse_draws d cross join lateral jsonb_array_elements(d.cards) e
+  where d.game_id=p_game_id and d.kept_card_keys ? (e->>'card_key') and not(d.used_card_keys ? (e->>'card_key')) and e->>'card_kind'='time_bonus';
+
+  -- Backwards compatibility for copies created by the old Duplicate implementation.
+  select coalesce(sum(value_int),0)::integer into v_dup from public.private_card_uses
+  where game_id=p_game_id and effect_key='duplicate_bonus' and is_active;
+
+  -- v3.10.1+: copied time cards are real held card instances.
+  select coalesce(sum(coalesce(nullif(metadata->'card'->>'value_int','')::integer,0)),0)::integer into v_virtual
+  from public.private_card_uses
+  where game_id=p_game_id
+    and effect_key='duplicate_copy'
+    and is_active
+    and metadata->'card'->>'card_kind'='time_bonus';
+
+  select coalesce(sum(coalesce(bonus_minutes,base_bonus_minutes)),0)::integer into v_traps
+  from public.time_traps where game_id=p_game_id and trigger_active;
+
+  select coalesce(sum(coalesce(nullif(payload->>'late_penalty_minutes','')::integer,0)),0)::integer into v_penalty
+  from public.game_actions where game_id=p_game_id and is_active and kind in('answer','question_veto');
+
+  v_held:=v_held+v_dup+v_virtual;
+  v_final:=greatest(0,v_raw+(v_held+v_traps-v_penalty)::bigint*60);
+
+  update public.games set status='finished',clock_elapsed_seconds=v_raw,clock_running=false,clock_started_at=null,
+    final_raw_seconds=v_raw,final_bonus_minutes=v_held,final_trap_minutes=v_traps,
+    final_penalty_minutes=v_penalty,final_score_seconds=v_final,finished_at=v_now,finished_by=p_actor
+  where id=p_game_id;
+
+  insert into public.game_actions(game_id,actor,kind,payload)
+  values(p_game_id,p_actor,'game_finish',jsonb_build_object(
+    'raw_seconds',v_raw,'held_bonus_minutes',v_held,'trap_bonus_minutes',v_traps,
+    'penalty_minutes',v_penalty,'final_seconds',v_final,'finished_at',v_now
+  ));
+
+  return query select v_raw,v_held,v_traps,v_penalty,v_final,v_now;
+end;$$;
+grant execute on function public.finish_game_v1(uuid,text,text) to anon,authenticated;

@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.9.0';
+  const APP_VERSION = '3.10.1';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -34,6 +34,21 @@
   const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKANLAGEOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
   const ACTIVE_POI_TYPES=['museum','park','library','cinema','hospital','cemetery','church','zoo'];
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
+  // Current 2026 Wiener Weinwandertag access/start/end points. The official event has
+  // four main routes; Route 1 explicitly exposes several public entry points.
+  const WINE_HIKE_POINTS=[
+    {name:'Neustift am Walde',route:'Neustift – Nußdorf',lat:48.25105,lng:16.30183},
+    {name:'Sievering',route:'Neustift – Nußdorf',lat:48.25416,lng:16.31728},
+    {name:'Weingut Wien Cobenzl',route:'Neustift – Nußdorf',lat:48.26350,lng:16.32185},
+    {name:'Grinzing',route:'Neustift – Nußdorf',lat:48.25510,lng:16.34188},
+    {name:'Nußdorf / Beethovengang',route:'Neustift – Nußdorf',lat:48.25954,lng:16.36274},
+    {name:'Strebersdorfer Platz',route:'Strebersdorf – Stammersdorf',lat:48.29495,lng:16.38988},
+    {name:'Wien Stammersdorf',route:'Strebersdorf – Stammersdorf',lat:48.29805,lng:16.42053},
+    {name:'Schloss Wilhelminenberg',route:'Ottakring',lat:48.21957,lng:16.28555},
+    {name:'Franz-Asenbauer-Gasse',route:'Mauer',lat:48.15478,lng:16.27130},
+    {name:'Zemlinskygasse / Willergasse',route:'Mauer',lat:48.13961,lng:16.25753}
+  ];
+  const MANUAL_CURSE_EFFECTS=new Set(['fiaker','schwarzkappler','wean_ned_schlecht_redn']);
 
   const DEFAULT_QUESTION_CARDS = [
     { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
@@ -102,7 +117,7 @@
     gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
-    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x}))
+    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null
   };
 
   const $ = id => document.getElementById(id);
@@ -782,6 +797,14 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
 
   async function handleQuestionCard(card,providedOrigin=null){
     if(state.role!=='seeker')return;
+    const blockingCurse=activeCurseActions().find(a=>['fiaker','side_quest'].includes(a.payload?.effect_key));
+    if(blockingCurse){
+      const effect=blockingCurse.payload?.effect_key;
+      const message=effect==='fiaker'
+        ? 'Spot a Fiaker and clear the curse before asking another question.'
+        : 'The Side Quest is still active. New questions unlock when its 45-minute timer ends.';
+      return toast(message,5000);
+    }
     if(activeQuestionForSlot(card.slot))return toast('That question has already been asked.');
     if(card.endgame_only&&!latestAction('endgame_zone'))return toast(`${card.title} is available in Endgame.`);
     if(state.previewQuestionSlot&&state.previewQuestionSlot!==card.slot)cancelQuestionPreview();
@@ -1047,7 +1070,22 @@ This does not consume a Veto card and awards no card draw. If the Hider is outsi
   function closePhotoModal(){$('photoModal').classList.add('hidden');$('photoModalImage').removeAttribute('src');}
 
   function availableHandCards(effectKey=null){
-    const cards=[]; for(const d of state.hiderDraws){if(!drawIsEarned(d))continue;const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]);for(const c of d.cards||[])if(kept.has(c.card_key)&&!used.has(c.card_key)&&(!effectKey||c.effect_key===effectKey))cards.push({...c,draw_id:d.id});} return cards;
+    const cards=[];
+    for(const d of state.hiderDraws){
+      if(!drawIsEarned(d))continue;
+      const kept=new Set(d.kept_card_keys||[]),used=new Set(d.used_card_keys||[]);
+      for(const c of d.cards||[])if(kept.has(c.card_key)&&!used.has(c.card_key)&&(!effectKey||c.effect_key===effectKey))cards.push({...c,draw_id:d.id});
+    }
+    // Duplicate creates a genuine second hand instance stored privately in Supabase.
+    // It deliberately does not alter the original draw or the source card.
+    for(const u of state.privateCardUses||[]){
+      if(!u?.is_active||u.effect_key!=='duplicate_copy')continue;
+      const c=u.metadata?.card;
+      if(!c||typeof c!=='object')continue;
+      const copy={...c,card_key:u.card_key||c.card_key,duplicate_instance:true,duplicate_use_id:u.id};
+      if(!effectKey||copy.effect_key===effectKey)cards.push(copy);
+    }
+    return cards;
   }
   async function vetoQuestion(q){
     const veto=availableHandCards('veto_question')[0];if(!veto)return toast('No unused Veto Question card is in your hand.');
@@ -1064,8 +1102,24 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
   async function discardHeldCard(card){const ok=await confirmAction('Discard this card?',`${card.title}\n\nIt leaves your hand and goes to the discard pile until a future reshuffle.`,'Discard',true);if(!ok)return;const {error}=await state.supabase.rpc('discard_held_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();}
 
   function cardCostKind(card){return card?.cast_cost_kind||((Number(card?.cast_cost_minutes||0)>0)?'time':'none');}
-  function cardCostLabel(card){const kind=cardCostKind(card);if(kind==='time')return `${Number(card.cast_cost_minutes||0)} min`;if(kind==='custom')return card.cast_cost_text||'Custom cost';return '';}
-  function chooseCastingCost(card){const kind=cardCostKind(card),cost=Number(card.cast_cost_minutes||0);if(kind!=='time'||cost<=0)return Promise.resolve([]);const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus');if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castModal').classList.remove('hidden');});}
+  function castCategoryLabel(category){return ({curse:'another Curse',veto:'a Veto',time_bonus:'a Time Bonus',powerup:'a Power-up',time_trap:'a Time Trap'})[category]||'the required card';}
+  function cardMatchesCastCategory(card,category){if(category==='curse')return card?.card_kind==='curse';if(category==='veto')return card?.effect_key==='veto_question';if(category==='time_bonus')return card?.card_kind==='time_bonus';if(category==='powerup')return card?.card_kind==='powerup';if(category==='time_trap')return card?.effect_key==='time_trap'||card?.card_kind==='time_trap';return false;}
+  function cardCostLabel(card){const kind=cardCostKind(card);if(kind==='time')return `${Number(card.cast_cost_minutes||0)} min`;if(kind==='custom')return card.cast_cost_text||'Custom cost';if(kind==='discard_any')return 'Discard 1 other card';if(kind==='discard_category')return `Discard ${castCategoryLabel(card.cast_cost_category)}`;return '';}
+  function chooseCastingCost(card,excludedKeys=[]){
+    const kind=cardCostKind(card),cost=Number(card.cast_cost_minutes||0),excluded=new Set(excludedKeys.filter(Boolean));excluded.add(card.card_key);
+    if(kind==='none'||kind==='custom')return Promise.resolve([]);
+    if(kind==='time'){
+      const bonuses=availableHandCards().filter(c=>c.card_kind==='time_bonus'&&!excluded.has(c.card_key));
+      if(cost<=0)return Promise.resolve([]);if(bonuses.reduce((sum,c)=>sum+Number(c.value_int||0),0)<cost){toast(`You need ${cost} minutes of time bonuses to cast ${card.title}.`);return Promise.resolve(null);}
+      return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Pay ${cost} min to cast ${card.title}`;if($('castHelp'))$('castHelp').textContent='Select time-bonus cards to spend. Whole cards are consumed, so overpayment is allowed.';$('castOptions').innerHTML=bonuses.map(c=>`<label class="cast-option"><input type="checkbox" value="${escapeHtml(c.card_key)}" data-value="${Number(c.value_int||0)}"><span><strong>${escapeHtml(c.title)}</strong><small>${Number(c.value_int||0)} min</small></span></label>`).join('');const update=()=>{const checked=[...$('castOptions').querySelectorAll('input:checked')];const total=checked.reduce((sum,x)=>sum+Number(x.dataset.value||0),0);$('castTotal').textContent=`Selected: ${total} / ${cost} min${total>cost?` · ${total-cost} min overpayment`:''}`;$('castConfirm').disabled=total<cost;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castConfirm').textContent='Use selected bonuses';$('castModal').classList.remove('hidden');});
+    }
+    if(kind==='discard_any'||kind==='discard_category'){
+      const category=card.cast_cost_category||'',candidates=availableHandCards().filter(c=>!excluded.has(c.card_key)&&(kind==='discard_any'||cardMatchesCastCategory(c,category)));
+      if(!candidates.length){toast(kind==='discard_any'?`You need another held card to cast ${card.title}.`:`You need ${castCategoryLabel(category)} in your hand to cast ${card.title}.`);return Promise.resolve(null);}
+      return new Promise(resolve=>{state.castResolver=resolve;state.castCard=card;$('castTitle').textContent=`Discard a card to cast ${card.title}`;if($('castHelp'))$('castHelp').textContent=kind==='discard_any'?'Choose one other held card. It will be consumed as the casting cost.':`Choose ${castCategoryLabel(category)}. It will be consumed as the casting cost.`;$('castOptions').innerHTML=candidates.map(c=>`<label class="cast-option"><input type="radio" name="discard-cast-card" value="${escapeHtml(c.card_key)}"><span><strong>${escapeHtml(c.title)}</strong><small>${escapeHtml(c.card_kind==='time_bonus'?`${Number(c.value_int||0)} min bonus`:humanize(c.card_kind))}</small></span></label>`).join('');const update=()=>{const checked=$('castOptions').querySelector('input:checked');$('castTotal').textContent=checked?'1 card selected':'Choose 1 card';$('castConfirm').disabled=!checked;};$('castOptions').querySelectorAll('input').forEach(x=>x.addEventListener('change',update));update();$('castConfirm').textContent='Discard & cast';$('castModal').classList.remove('hidden');});
+    }
+    return Promise.resolve([]);
+  }
   function closeCastModal(value){$('castModal').classList.add('hidden');const r=state.castResolver;state.castResolver=null;state.castCard=null;r?.(value);}
 
   function clearProsperousPreview(){state.mapLayers.prosperousPreview?.remove();state.mapLayers.prosperousPreview=null;}
@@ -1075,6 +1129,46 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
     state.mapLayers.prosperousPreview=L.circle([lat,lng],{radius,color:'#eab308',weight:3,dashArray:'7 6',fillColor:'#fde047',fillOpacity:.10}).addTo(state.gameMap).bindTooltip(`Prosperous Home preview · ${Math.round(radius)} m`);
   }
 
+  function clearCursePreview(){state.mapLayers.cursePreview?.remove();state.mapLayers.cursePreview=null;}
+  function wineHikeLayer(style='preview'){
+    const group=L.layerGroup();
+    for(const p of WINE_HIKE_POINTS){
+      const icon=L.divIcon({className:`wine-hike-marker ${style}`,html:'<span>🍷</span>',iconSize:[28,28],iconAnchor:[14,14]});
+      L.marker([p.lat,p.lng],{icon}).bindTooltip(`${p.name} · ${p.route}`).addTo(group);
+    }
+    return group;
+  }
+  function forbiddenDistrictLayer(numbers){
+    const wanted=new Set((numbers||[]).map(Number)),features=(state.mapData?.districts||[]).filter(d=>wanted.has(Number(d.number))).map(d=>d.feature);
+    if(!features.length)return null;return L.geoJSON(turf.featureCollection(features),{style:{color:'#dc2626',weight:2,fillColor:'#ef4444',fillOpacity:.22},interactive:false});
+  }
+  function showCursePreview(card,payload={}){
+    clearCursePreview();if(state.role!=='hider'||!state.gameMap)return;
+    const group=L.layerGroup(),effect=card.effect_key;
+    if(effect==='wean_ned_schlecht_redn')wineHikeLayer('preview').eachLayer(l=>group.addLayer(l));
+    if(effect==='haute_vollee'){const l=forbiddenDistrictLayer([1,18,19]);if(l)group.addLayer(l);}
+    if(effect==='deutsche_bahn'&&payload.blocked_line){for(const f of matchingTransitFeatures([payload.blocked_line]))L.geoJSON(f,{style:{color:'#dc2626',weight:8,opacity:.78},interactive:false}).bindTooltip(`${payload.blocked_line} blocked`).addTo(group);}
+    if(effect==='mordor_curse'){
+      const blocked=payload.mode==='inside'?(state.mapData?.districts||[]).map(d=>Number(d.number)).filter(n=>![21,22].includes(n)):[21,22];const l=forbiddenDistrictLayer(blocked);if(l)group.addLayer(l);
+    }
+    if(group.getLayers().length){group.addTo(state.gameMap);state.mapLayers.cursePreview=group;}
+  }
+  async function effectPayloadForCard(card){
+    if(card.effect_key==='deutsche_bahn'){
+      const refs=availableRailLineRefs();if(!refs.length){toast('Transit line data are not loaded yet.');return null;}
+      let suggested='';if(state.seekerLivePosition){const n=nearestRailStation({lat:Number(state.seekerLivePosition.lat),lng:Number(state.seekerLivePosition.lng)});suggested=n?.lineRefs?.[0]||'';}
+      const raw=window.prompt(`Which U-/S-Bahn line is blocked?
+
+${refs.join(', ')}`,suggested||refs[0]);if(raw===null)return null;const line=String(raw).trim().toUpperCase();if(!refs.includes(line)){toast('Choose a line from the cached Vienna network.');return null;}return {blocked_line:line};
+    }
+    if(card.effect_key==='mordor_curse'){
+      let inside=null;if(state.seekerLivePosition){const d=pointDistrict(turf.point([Number(state.seekerLivePosition.lng),Number(state.seekerLivePosition.lat)]));if(d)inside=[21,22].includes(Number(d.number));}
+      if(inside===null)inside=window.confirm(`Are the Seekers currently in district 21 or 22?\n\nOK = yes, they must stay in Mordor.\nCancel = no, they may not enter Mordor.`);
+      return {mode:inside?'inside':'outside'};
+    }
+    return {};
+  }
+
   async function playHandCard(card){
     if(card.card_kind==='time_bonus')return toast('Time bonuses stay in your hand until scoring or casting.');
     if(card.effect_key==='veto_question')return toast('Use Veto on an open question.');
@@ -1082,27 +1176,45 @@ Current late penalty: −${pen} min`:''}`,'Use veto',true);if(!ok)return;
     if(card.effect_key==='duplicate'){await useDuplicate(card);return;}
     if(card.effect_key==='reshuffle_deck'){const ok=await confirmAction('Fresh Shuffle?','Reshuffle the discard pile into a new draw pile. Cards in your hand stay out.','Shuffle');if(!ok)return;const {error}=await state.supabase.rpc('use_reshuffle_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();return;}
     const prosperous=card.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
+    let effectPayload={};
     try{
+      effectPayload=await effectPayloadForCard(card);if(effectPayload===null)return;showCursePreview(card,effectPayload);
       const costKeys=await chooseCastingCost(card);if(costKeys===null)return;
-      const cost=Number(card.cast_cost_minutes||0);let msg=card.description||'';
-      if(card.duration_seconds)msg+=`\nDuration: ${formatDuration(card.duration_seconds)}.`;
-      if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}
-      if(cardCostKind(card)==='time'&&cost)msg+=`\nCost: ${cost} min.`;else if(cardCostKind(card)==='custom')msg+=`\nCost: ${card.cast_cost_text||'Custom requirement'}.`;
+      let msg=card.description||'Curse';if(card.duration_seconds)msg+=`
+Duration: ${formatDuration(card.duration_seconds)}.`;
+      if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`
+Hiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}
+      const costLabel=cardCostLabel(card);if(costLabel)msg+=`
+Cost: ${costLabel}.`;
+      if(card.effect_key==='deutsche_bahn')msg+=`
+Blocked line: ${effectPayload.blocked_line}.`;
+      if(card.effect_key==='wean_ned_schlecht_redn')msg+=`\nThe server checks Vienna time when cast: Monday through Tuesday 11:59 = 1 h halt; otherwise the Weinwanderweg access points become the objective.`;
+      if(card.effect_key==='mordor_curse')msg+=`
+Mode: ${effectPayload.mode==='inside'?'Seekers must stay in districts 21/22':'Seekers must stay out of districts 21/22'}.`;
       const ok=await confirmAction(`Play ${card.title}?`,msg,'Play');if(!ok)return;
-      const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
-    } finally {if(prosperous)clearProsperousPreview();}
+      const {error}=await state.supabase.rpc('play_card_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[],p_effect_payload:effectPayload});if(error)throw error;await reloadGameState();
+    } finally {if(prosperous)clearProsperousPreview();clearCursePreview();}
   }
 
   async function useDuplicate(card){
-    const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));if(!targets.length)return toast('Duplicate needs another held bonus or curse.');
-    const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');const raw=window.prompt(`Choose a card to copy:\n${choices}`);if(!raw)return;const idx=Number(raw)-1;if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid choice.');const target=targets[idx];
-    const prosperous=target.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
-    try{
-      let costKeys=[];if(target.card_kind==='curse'){costKeys=await chooseCastingCost(target);if(costKeys===null)return;}
-      let msg=`Copy “${target.title}”. The original stays in your hand.`;if(prosperous){const r=Number(state.secret?.base_radius_m||BASE_HIDE_RADIUS_M)*Math.sqrt(currentAreaMultiplier()*2);msg+=`\nHiding radius: ${Math.round(currentEndgameRadius())} m → ${Math.round(r)} m.`;}if(cardCostKind(target)==='time'&&Number(target.cast_cost_minutes||0))msg+=`\nCost: ${target.cast_cost_minutes} min.`;else if(cardCostKind(target)==='custom')msg+=`\nCost: ${target.cast_cost_text||'Custom requirement'}.`;
-      const ok=await confirmAction('Use Duplicate?',msg,'Duplicate');if(!ok)return;
-      const {error}=await state.supabase.rpc('play_card_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:target.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;await reloadGameState();
-    } finally {if(prosperous)clearProsperousPreview();}
+    const targets=availableHandCards().filter(c=>c.card_key!==card.card_key&&['time_bonus','curse'].includes(c.card_kind));
+    if(!targets.length)return toast('Duplicate needs another held bonus or curse.');
+    const choices=targets.map((c,i)=>`${i+1}. ${c.title}`).join('\n');
+    const raw=window.prompt(`Choose a card to copy:\n${choices}`);
+    if(!raw)return;
+    const idx=Number(raw)-1;
+    if(!Number.isInteger(idx)||idx<0||idx>=targets.length)return toast('Invalid choice.');
+    const target=targets[idx];
+    const ok=await confirmAction('Use Duplicate?',`Create another “${target.title}” in your hand.\n\nThe original stays in your hand and the Duplicate card is consumed.`,'Duplicate');
+    if(!ok)return;
+    const {error}=await state.supabase.rpc('use_duplicate_v1',{
+      p_game_id:state.game.id,
+      p_password:state.hiderPassword,
+      p_duplicate_card_key:card.card_key,
+      p_copy_card_key:target.card_key
+    });
+    if(error)throw error;
+    await reloadGameState();
   }
 
   async function placeTimeTrapAtStation(feature){
@@ -1443,9 +1555,52 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     $('timeTraps').querySelectorAll('[data-trigger-trap]').forEach(b=>b.addEventListener('click',()=>{const t=state.timeTraps.find(x=>x.id===b.dataset.triggerTrap);if(t)triggerTimeTrap(t,b.dataset.trapActive==='true').catch(handleError);}));
   }
 
-  const SEEKER_CURSE_EFFECTS=new Set(['gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op','right_turn','passenger_princess','hide_seek_ception','wurst_stand','melange','strassenbahn_only','opernball','custom_rule']);
-  const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op','hide_seek_ception','wurst_stand','melange','opernball','custom_rule']);
-  function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){}}
+  const SEEKER_CURSE_EFFECTS=new Set([
+    'gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op','right_turn','passenger_princess','hide_seek_ception','wurst_stand','melange','strassenbahn_only','opernball','custom_rule',
+    'side_quest','deutsche_bahn','wean_ned_schlecht_redn','haute_vollee','one_ring','schwarzkappler','wiener_grantler','fiaker','mordor_curse','broken_lift','gemeindebau','quick_escalation','false_prophet'
+  ]);
+  const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op','hide_seek_ception','wurst_stand','melange','opernball','custom_rule','one_ring','wiener_grantler','gemeindebau']);
+  function curseIsCompleted(a){return effectiveActions('curse_complete').some(c=>c.parent_id===a.id);}
+  function activeCurseActions(now=serverNowMs()){
+    return effectiveActions('curse_play').filter(a=>{
+      if(curseIsCompleted(a))return false;
+      const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;if(end&&end<=now)return false;
+      if(!end&&ONE_QUESTION_CURSES.has(a.payload?.effect_key)){const t=new Date(a.created_at).getTime();if(effectiveActions('question').some(q=>q.actor==='seeker'&&new Date(q.created_at).getTime()>t))return false;}
+      return true;
+    }).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+  }
+  function curseExtraText(a){
+    const p=a.payload||{},e=p.effect_key;
+    if(e==='deutsche_bahn')return p.blocked_line?`Blocked line: ${p.blocked_line}`:'';
+    if(e==='side_quest')return p.side_quest||'';
+    if(e==='wean_ned_schlecht_redn')return p.mode==='work_hours'?'Work hours: stay put until the timer ends.':'Reach any marked Weinwanderweg access point, then check the curse off.';
+    if(e==='haute_vollee')return 'Forbidden: districts 1, 18 and 19.';
+    if(e==='mordor_curse')return p.mode==='inside'?'Stay inside districts 21/22.':'Do not enter districts 21/22.';
+    return '';
+  }
+  function renderCurseMapOverlays(curses){
+    if(!state.gameMap)return;const relevant=(curses||[]).filter(a=>['deutsche_bahn','wean_ned_schlecht_redn','haute_vollee','mordor_curse'].includes(a.payload?.effect_key));
+    const sig=relevant.map(a=>`${a.id}:${a.payload?.effect_key}:${a.payload?.blocked_line||''}:${a.payload?.mode||''}`).join('|');if(sig===state.curseMapSignature)return;state.curseMapSignature=sig;
+    state.mapLayers.curseEffects?.remove();state.mapLayers.curseEffects=null;if(!relevant.length)return;const group=L.layerGroup();
+    for(const a of relevant){const p=a.payload||{},e=p.effect_key;
+      if(e==='deutsche_bahn'&&p.blocked_line){for(const f of matchingTransitFeatures([p.blocked_line]))L.geoJSON(f,{style:{color:'#dc2626',weight:8,opacity:.78},interactive:false}).bindTooltip(`${p.blocked_line} blocked`).addTo(group);}
+      if(e==='haute_vollee'){const l=forbiddenDistrictLayer([1,18,19]);if(l)group.addLayer(l);}
+      if(e==='mordor_curse'){const blocked=p.mode==='inside'?(state.mapData?.districts||[]).map(d=>Number(d.number)).filter(n=>![21,22].includes(n)):[21,22];const l=forbiddenDistrictLayer(blocked);if(l)group.addLayer(l);}
+      if(e==='wean_ned_schlecht_redn'&&p.mode==='wine_hike')wineHikeLayer('active').eachLayer(l=>group.addLayer(l));
+    }
+    if(group.getLayers().length){group.addTo(state.gameMap);state.mapLayers.curseEffects=group;}
+  }
+  function manualCurseButton(a){
+    if(state.role!=='seeker'||!MANUAL_CURSE_EFFECTS.has(a.payload?.effect_key))return '';
+    if(a.payload?.effect_key==='wean_ned_schlecht_redn'&&a.payload?.mode!=='wine_hike')return '';
+    const label=a.payload?.effect_key==='fiaker'?'✓ Fiaker spotted':a.payload?.effect_key==='schwarzkappler'?'✓ Ticket bought':'✓ Reached a Weinwanderweg point';
+    return `<button class="secondary tiny curse-complete" data-complete-curse="${a.id}">${label}</button>`;
+  }
+  async function completePublicCurse(actionId){
+    const a=state.actions.find(x=>x.id===actionId);if(!a)return;const ok=await confirmAction('Clear this curse?',`${a.payload?.title||'Curse'}\n\nConfirm that the required task has been completed.`,'Clear curse');if(!ok)return;
+    const {error}=await state.supabase.rpc('complete_curse_v1',{p_game_id:state.game.id,p_curse_action_id:actionId});if(error)throw error;await reloadGameState();
+  }
+  function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){} }
   function playCurseSound(){
     try{
       unlockCurseAudio();const ctx=state.audioCtx;if(!ctx||ctx.state==='suspended')return;const gain=ctx.createGain();gain.connect(ctx.destination);gain.gain.setValueAtTime(.0001,ctx.currentTime);gain.gain.exponentialRampToValueAtTime(.16,ctx.currentTime+.02);gain.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.7);
@@ -1453,19 +1608,21 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     }catch(e){console.warn('Curse sound unavailable',e);}
   }
   function renderActiveCurses(){
-    const now=serverNowMs();const all=effectiveActions().filter(a=>['curse_play','time_trap_trigger','question_veto'].includes(a.kind));const visible=all.filter(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;if(end)return end>now;if(a.kind==='curse_play'&&ONE_QUESTION_CURSES.has(a.payload?.effect_key)){const t=new Date(a.created_at).getTime();return !effectiveActions('question').some(q=>q.actor==='seeker'&&new Date(q.created_at).getTime()>t);}return true;}).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
-    $('activeCurses').innerHTML=visible.length?visible.map(a=>{if(a.kind==='question_veto')return `<div class="curse-item"><strong>${a.payload?.automatic_tentacle?'Tentacle automatically vetoed':'Question vetoed'}</strong><div class="meta">${escapeHtml(a.payload?.question_title||'A question')} ${a.payload?.automatic_tentacle?(a.payload?.radar_miss?`cleared the ${Number(a.payload?.radius_m||TENTACLE_VALID_DISTANCE_M)} m Tentacle circle.`:'had no usable POIs in range.'):'was vetoed.'}</div></div>`;if(a.kind==='time_trap_trigger')return `<div class="curse-item"><strong>Time Trap triggered</strong><div class="meta">${escapeHtml(a.payload?.station_name||'Station')} · +${Number(a.payload?.bonus_minutes||0)} min</div></div>`;const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-item curse-active"><strong>${escapeHtml(a.payload?.title||'Card')}</strong><div class="meta">${escapeHtml(a.payload?.description||'')}</div><div class="curse-countdown">${rem===null?'ACTIVE':formatCountdown(rem)}</div></div>`;}).join(''):'<div class="mini-status">No public card effect is active.</div>';
+    const now=serverNowMs();const curses=activeCurseActions(now);renderCurseMapOverlays(curses);
+    const misc=effectiveActions().filter(a=>['time_trap_trigger','question_veto'].includes(a.kind)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));const visible=[...curses,...misc].sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    $('activeCurses').innerHTML=visible.length?visible.map(a=>{
+      if(a.kind==='question_veto')return `<div class="curse-item"><strong>${a.payload?.automatic_tentacle?'Tentacle automatically vetoed':'Question vetoed'}</strong><div class="meta">${escapeHtml(a.payload?.question_title||'A question')} ${a.payload?.automatic_tentacle?(a.payload?.radar_miss?`cleared the ${Number(a.payload?.radius_m||TENTACLE_VALID_DISTANCE_M)} m Tentacle circle.`:'had no usable POIs in range.'):'was vetoed.'}</div></div>`;
+      if(a.kind==='time_trap_trigger')return `<div class="curse-item"><strong>Time Trap triggered</strong><div class="meta">${escapeHtml(a.payload?.station_name||'Station')} · +${Number(a.payload?.bonus_minutes||0)} min</div></div>`;
+      const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null,rem=end?Math.max(0,Math.ceil((end-now)/1000)):null,extra=curseExtraText(a);return `<div class="curse-item curse-active"><strong>${escapeHtml(a.payload?.title||'Card')}</strong><div class="meta">${escapeHtml(a.payload?.description||'')}${extra?`<br><strong>${escapeHtml(extra)}</strong>`:''}</div><div class="curse-countdown">${rem===null?'ACTIVE':formatCountdown(rem)}</div>${manualCurseButton(a)}</div>`;
+    }).join(''):'<div class="mini-status">No public card effect is active.</div>';
 
-    const strip=$('seekerCurseStrip');if(!strip)return;
-    const seekerCurses=visible.filter(a=>a.kind==='curse_play'&&SEEKER_CURSE_EFFECTS.has(a.payload?.effect_key));
+    document.querySelectorAll('[data-complete-curse]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>completePublicCurse(b.dataset.completeCurse).catch(handleError));});
+
+    const strip=$('seekerCurseStrip');if(!strip)return;const seekerCurses=curses.filter(a=>SEEKER_CURSE_EFFECTS.has(a.payload?.effect_key));
     if(state.role!=='seeker'||!seekerCurses.length){strip.classList.add('hidden');strip.innerHTML='';if(state.role!=='seeker'){state.curseSoundPrimed=false;state.seenCurseIds=new Set();}return;}
-    strip.classList.remove('hidden');strip.innerHTML=seekerCurses.map(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null;const rem=end?Math.max(0,Math.ceil((end-now)/1000)):null;return `<div class="curse-chip"><span class="curse-chip-icon">⚠</span><span><strong>${escapeHtml(a.payload?.title||'Curse')}</strong><small>${rem===null?'ACTIVE':formatCountdown(rem)}</small></span></div>`;}).join('');
-    const ids=new Set(seekerCurses.map(a=>a.id));
-    if(!state.curseSoundPrimed){state.seenCurseIds=ids;state.curseSoundPrimed=true;}
-    else{
-      const incoming=seekerCurses.filter(a=>!state.seenCurseIds.has(a.id));
-      if(incoming.length){incoming.forEach(a=>state.seenCurseIds.add(a.id));playCurseSound();toast(`CURSED: ${incoming.map(a=>a.payload?.title||'Curse').join(', ')}`,5000);}
-    }
+    strip.classList.remove('hidden');strip.innerHTML=seekerCurses.map(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null,rem=end?Math.max(0,Math.ceil((end-now)/1000)):null,extra=curseExtraText(a);return `<div class="curse-chip curse-chip-wide"><span class="curse-chip-icon">⚠</span><span><strong>${escapeHtml(a.payload?.title||'Curse')}</strong>${extra?`<em>${escapeHtml(extra)}</em>`:''}<small>${rem===null?'ACTIVE':formatCountdown(rem)}</small>${manualCurseButton(a)}</span></div>`;}).join('');
+    strip.querySelectorAll('[data-complete-curse]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>completePublicCurse(b.dataset.completeCurse).catch(handleError));});
+    const ids=new Set(seekerCurses.map(a=>a.id));if(!state.curseSoundPrimed){state.seenCurseIds=ids;state.curseSoundPrimed=true;}else{const incoming=seekerCurses.filter(a=>!state.seenCurseIds.has(a.id));if(incoming.length){incoming.forEach(a=>state.seenCurseIds.add(a.id));playCurseSound();toast(`CURSED: ${incoming.map(a=>a.payload?.title||'Curse').join(', ')}`,5000);}}
   }
 
   function canToggleAction(a){if(['time_trap_place','time_trap_trigger','endgame_zone','game_finish'].includes(a.kind))return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
@@ -1786,9 +1943,10 @@ ${failures.join('\n')}`,9000);
       </div>
       <label>Card text<textarea class="dev-card-description" maxlength="1200">${escapeHtml(c.description||'')}</textarea></label>
       <div class="card-cost-row ${isCurse?'':'hidden'}">
-        <label>Casting cost<select class="dev-card-cost-kind"><option value="none" ${costKind==='none'?'selected':''}>None</option><option value="time" ${costKind==='time'?'selected':''}>Time bonus</option><option value="custom" ${costKind==='custom'?'selected':''}>Custom</option></select></label>
+        <label>Casting cost<select class="dev-card-cost-kind"><option value="none" ${costKind==='none'?'selected':''}>None</option><option value="time" ${costKind==='time'?'selected':''}>Time bonus</option><option value="discard_any" ${costKind==='discard_any'?'selected':''}>Discard any other card</option><option value="discard_category" ${costKind==='discard_category'?'selected':''}>Discard card by category</option><option value="custom" ${costKind==='custom'?'selected':''}>Custom / physical</option></select></label>
         <label class="card-cost-minutes ${costKind==='time'?'':'hidden'}">Minutes<select class="dev-card-cost-minutes">${minuteCostOptions(c.cast_cost_minutes||5)}</select></label>
-        <label class="card-cost-custom ${costKind==='custom'?'':'hidden'}">Custom cost<input class="dev-card-cost-text" maxlength="240" value="${escapeHtml(c.cast_cost_text||'')}" placeholder="e.g. Roll a 6, sing a song…"></label>
+        <label class="card-cost-category ${costKind==='discard_category'?'':'hidden'}">Card category<select class="dev-card-cost-category"><option value="curse" ${c.cast_cost_category==='curse'?'selected':''}>Curse</option><option value="veto" ${c.cast_cost_category==='veto'?'selected':''}>Veto</option><option value="time_bonus" ${c.cast_cost_category==='time_bonus'?'selected':''}>Time bonus</option><option value="powerup" ${c.cast_cost_category==='powerup'?'selected':''}>Power-up</option><option value="time_trap" ${c.cast_cost_category==='time_trap'?'selected':''}>Time Trap</option></select></label>
+        <label class="card-cost-custom ${costKind==='custom'?'':'hidden'}">Custom cost<input class="dev-card-cost-text" maxlength="240" value="${escapeHtml(c.cast_cost_text||'')}" placeholder="e.g. Spot a person standing left on an escalator"></label>
       </div>${special?'<div class="mini-status">Built-in effect. The engine behavior is intentionally not editable here.</div>':(!isCurse?'<div class="mini-status">This special card uses its built-in action.</div>':'')}
       <div class="developer-card-actions"><button class="secondary" data-save-developer-card>Save</button>${isNew||special?'':`<button class="danger" data-delete-developer-card>Remove</button>`}</div>
     </div>`;
@@ -1801,7 +1959,7 @@ ${failures.join('\n')}`,9000);
     bindDeveloperCardRows();
   }
   function bindDeveloperCardRows(){
-    document.querySelectorAll('#developerCards .dev-card-cost-kind,#developerSpecialCards .dev-card-cost-kind').forEach(sel=>{if(sel.dataset.bound)return;sel.dataset.bound='1';sel.addEventListener('change',()=>{const row=sel.closest('.developer-card'),kind=sel.value;row.querySelector('.card-cost-minutes')?.classList.toggle('hidden',kind!=='time');row.querySelector('.card-cost-custom')?.classList.toggle('hidden',kind!=='custom');});});
+    document.querySelectorAll('#developerCards .dev-card-cost-kind,#developerSpecialCards .dev-card-cost-kind').forEach(sel=>{if(sel.dataset.bound)return;sel.dataset.bound='1';sel.addEventListener('change',()=>{const row=sel.closest('.developer-card'),kind=sel.value;row.querySelector('.card-cost-minutes')?.classList.toggle('hidden',kind!=='time');row.querySelector('.card-cost-category')?.classList.toggle('hidden',kind!=='discard_category');row.querySelector('.card-cost-custom')?.classList.toggle('hidden',kind!=='custom');});});
     document.querySelectorAll('#developerCards [data-save-developer-card],#developerSpecialCards [data-save-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminSaveCard(b.closest('.developer-card')).catch(handleError));});
     document.querySelectorAll('#developerCards [data-delete-developer-card]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>adminDeleteCard(b.closest('.developer-card')).catch(handleError));});
   }
@@ -1821,10 +1979,11 @@ ${failures.join('\n')}`,9000);
       p_value_int:isNew?null:(old?.value_int??null),p_cast_cost_kind:costKind,
       p_cast_cost_minutes:costKind==='time'?Number(row.querySelector('.dev-card-cost-minutes').value):0,
       p_cast_cost_text:costKind==='custom'?row.querySelector('.dev-card-cost-text').value.trim():null,
+      p_cast_cost_category:costKind==='discard_category'?row.querySelector('.dev-card-cost-category').value:null,
       p_deck_count:Number(row.querySelector('.dev-card-count').value)
     };
     const ok=await confirmAction(isNew?'Add this card?':'Save card changes?',`${args.p_title}\nCopies: ${args.p_deck_count}\n\n${args.p_description}`,'Save');if(!ok)return;
-    const {error}=await state.supabase.rpc('admin_save_card_v2',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+    const {error}=await state.supabase.rpc('admin_save_card_v3',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
   }
   async function adminDeleteCard(row){
     const key=row.dataset.developerCard,title=row.querySelector('.dev-card-title').value.trim();
@@ -1934,7 +2093,7 @@ ${failures.join('\n')}`,9000);
     const [gamesRes,refsRes,cardsRes,questionsRes]=await Promise.all([
       state.supabase.rpc('admin_list_games_v1',{p_password:state.developerPassword}),
       state.supabase.from('reference_datasets').select('dataset_key,source,content_hash,updated_at,checked_at').order('dataset_key'),
-      state.supabase.rpc('admin_list_cards_v2',{p_password:state.developerPassword}),
+      state.supabase.rpc('admin_list_cards_v3',{p_password:state.developerPassword}),
       state.supabase.rpc('admin_list_questions_v1',{p_password:state.developerPassword})
     ]);
     if(gamesRes.error)throw gamesRes.error;if(refsRes.error)throw refsRes.error;if(cardsRes.error)throw cardsRes.error;if(questionsRes.error)throw questionsRes.error;
@@ -1965,7 +2124,7 @@ ${failures.join('\n')}`,9000);
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
   function openDeveloper(){state.developerPassword=null;state.developerCards=[];state.developerQuestions=[];$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();state.mapLayers.curseEffects?.remove();state.mapLayers.cursePreview?.remove();state.mapLayers.curseEffects=null;state.mapLayers.cursePreview=null;state.curseMapSignature=null;Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){

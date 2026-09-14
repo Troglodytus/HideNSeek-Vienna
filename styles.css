@@ -401,3 +401,11 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 @media(min-width:821px){.developer-tabs{grid-template-columns:repeat(4,minmax(0,1fr));}}
 @media(max-width:820px){.developer-question-grid,.question-param-grid{grid-template-columns:1fr 1fr}.developer-tabs{grid-template-columns:1fr 1fr;}}
 @media(max-width:520px){.developer-question-grid,.question-param-grid{grid-template-columns:1fr}.developer-tabs{grid-template-columns:1fr 1fr}.developer-question .developer-card-actions{grid-template-columns:1fr 1fr;}}
+
+/* v3.10 interactive curse helpers */
+.wine-hike-marker { background: transparent; border: 0; }
+.wine-hike-marker span { display:grid; place-items:center; width:25px; height:25px; border-radius:50%; background:#fff; border:2px solid #7c2d12; box-shadow:0 2px 8px rgba(0,0,0,.18); font-size:14px; }
+.curse-chip-wide { max-width:min(100%,520px); align-items:flex-start; }
+.curse-chip-wide span:last-child { align-items:flex-start; flex-wrap:wrap; }
+.curse-chip-wide em { flex-basis:100%; font-style:normal; font-size:10px; line-height:1.25; opacity:.88; }
+.curse-complete { margin-top:5px; white-space:nowrap; }
