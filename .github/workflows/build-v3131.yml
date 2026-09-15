@@ -21,8 +21,22 @@ jobs:
         with:
           fetch-depth: 0
           ref: perf/v3.13.1-geometry-cache
+      - name: Reset generated files to main
+        run: git checkout origin/main -- app.js index.html
       - name: Apply patch
         run: python3 .github/v3131-patch.py
+      - name: Fix regex escaping in generated helper
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app.js')
+          s=p.read_text()
+          bad=r'/^[US]\\d+/i.test(r)'
+          good=r'/^[US]\d+/i.test(r)'
+          if bad not in s:
+              raise SystemExit('expected over-escaped regex not found')
+          p.write_text(s.replace(bad,good,1))
+          PY
       - name: Validate JavaScript
         run: node --check app.js
       - name: Validate invariants
@@ -33,6 +47,7 @@ jobs:
           grep -F "constraint_geometry" app.js
           grep -F "domain_geometry" app.js
           grep -F "possibleRenderSignature" app.js
+          grep -F '/^[US]\d+/i.test(r)' app.js
           grep -F "Current Street Shape" app.js
           grep -F "Nearest Bus Line" app.js
           grep -F "VOR Navigation" app.js
