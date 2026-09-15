@@ -480,3 +480,15 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
   .compact-segmented { grid-template-columns:1fr 1fr !important; }
   .compact-segmented .segment { padding:7px 5px; font-size:11px; }
 }
+
+
+/* v3.12 VOR Navigation ---------------------------------------------------- */
+.vor-navigation-panel{margin:10px 0 14px;padding:14px 16px;border-radius:16px;background:#111827;color:#f8fafc;box-shadow:0 10px 28px rgba(15,23,42,.16)}
+.vor-navigation-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}.vor-navigation-head strong{font-size:1rem}.vor-navigation-head span{font-variant-numeric:tabular-nums;font-weight:800;color:#fca5a5}
+.vor-navigation-body{display:flex;align-items:center;gap:18px;flex-wrap:wrap}.vor-navigation-copy{flex:1;min-width:190px;color:#cbd5e1;line-height:1.45}.vor-navigation-copy button{margin-top:10px}
+.vor-disk{position:relative;width:min(220px,62vw);aspect-ratio:1;border-radius:50%;overflow:hidden;flex:0 0 auto;background:radial-gradient(circle at 50% 50%,#111 0 30%,#080808 55%,#020202 100%);border:2px solid #475569;box-shadow:inset 0 0 28px rgba(255,255,255,.035),0 8px 22px rgba(0,0,0,.3)}
+.vor-disk::before,.vor-disk::after{content:'';position:absolute;inset:50% 10%;height:1px;background:rgba(255,255,255,.10);transform-origin:center}.vor-disk::after{transform:rotate(90deg)}
+.vor-sector{--vor-angle:0deg;position:absolute;inset:0;border-radius:50%;opacity:0;transform:rotate(var(--vor-angle));background:conic-gradient(from -15deg,rgba(239,68,68,.98) 0deg,rgba(239,68,68,.72) 16deg,rgba(239,68,68,.98) 30deg,transparent 30.1deg 360deg);-webkit-mask:radial-gradient(circle,transparent 0 24%,rgba(0,0,0,.12) 42%,rgba(0,0,0,.68) 72%,#000 100%);mask:radial-gradient(circle,transparent 0 24%,rgba(0,0,0,.12) 42%,rgba(0,0,0,.68) 72%,#000 100%);transition:transform .18s linear,opacity .2s}.vor-sector.ready{opacity:1}
+.vor-north-ring{--vor-north-angle:0deg;position:absolute;inset:11px;border-radius:50%;transform:rotate(var(--vor-north-angle));transition:transform .18s linear;pointer-events:none}.vor-north-ring span{position:absolute;top:-2px;left:50%;transform:translateX(-50%);font-size:.92rem;font-weight:900;line-height:1;color:#fff;text-shadow:0 1px 3px #000}
+.vor-center-dot{position:absolute;left:50%;top:50%;width:8px;height:8px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(255,255,255,.12)}
+@media(max-width:620px){.vor-navigation-body{justify-content:center}.vor-navigation-copy{flex-basis:100%;text-align:center}}
