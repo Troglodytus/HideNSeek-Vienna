@@ -934,13 +934,9 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   }
   async function ensureBusLines(){
     if(Array.isArray(state.mapData?.busLines)&&state.mapData.busLines.length)return state.mapData.busLines;
-    try{
-      const ref=await referenceDataset(REF_TRANSIT_KEY);
-      if(Array.isArray(ref?.busLines)&&ref.busLines.length){state.mapData.busLines=ref.busLines;return ref.busLines;}
-    }catch(e){console.warn('Bus reference lookup failed',e);}
-    const lineGeo=await fetchViennaWfs(VIENNA_TRANSIT_LINES_LAYER,'Vienna bus network');
-    const buses=normalizeOfficialBusLines(lineGeo);if(!buses.length)throw new Error('Vienna bus-line data are not seeded yet. Open Developer → Refresh districts + transit.');
-    state.mapData.busLines=buses;return buses;
+    const ref=await referenceDataset(REF_TRANSIT_KEY);
+    if(Array.isArray(ref?.busLines)&&ref.busLines.length){state.mapData.busLines=ref.busLines;return ref.busLines;}
+    throw new Error('Vienna bus-line reference data are not seeded yet. Open Developer → Refresh districts + transit once so every player uses the same bus geometry.');
   }
   function matchingBusFeatures(refs){const wanted=new Set((refs||[]).map(r=>String(r).toUpperCase()));return (state.mapData?.busLines||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r).toUpperCase())));}
   function availableBusLineRefs(){
@@ -2241,6 +2237,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     await new Promise(r=>setTimeout(r,0));
     const railLines=normalizeOfficialTransitLines(linesGeo);
     const busLines=normalizeOfficialBusLines(linesGeo);
+    if(!busLines.length)throw new Error('Vienna public-transport WFS returned no usable bus line geometry.');
     statusEl.textContent='Building station list from Vienna line attributes…';
     await new Promise(r=>setTimeout(r,0));
     const stations=normalizeOfficialStations(uGeo,stopsGeo,railLines,city);
@@ -2329,7 +2326,7 @@ ${failures.join('\n')}`,9000);
     try{
       const core=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
       if(core?.city&&validateDistricts(core.districts)&&core.stations?.length){await saveReferenceDataset(REF_ADMIN_KEY,{city:core.city,districts:core.districts},'Imported browser cache');await saveReferenceDataset(REF_STATIONS_KEY,{stations:core.stations},'Imported browser cache');count+=2;}
-      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails},'Imported browser cache');count++;}
+      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){const existingTransit=await referenceDataset(REF_TRANSIT_KEY);await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails,busLines:Array.isArray(existingTransit?.busLines)?existingTransit.busLines:[]},'Imported browser cache');count++;}
       for(const type of ACTIVE_POI_TYPES){const obj=JSON.parse(localStorage.getItem(POI_CACHE_PREFIX+type)||'null');if(Array.isArray(obj?.pois)){await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',{pois:obj.pois},'Imported browser cache');count++;}}
       toast(`Imported ${count} cached dataset${count===1?'':'s'} to Supabase.`);await loadDeveloperDashboard();
     }catch(e){handleError(e);}
