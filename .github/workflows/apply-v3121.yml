@@ -1,12 +1,11 @@
-name: Apply v3.12.1 transit and same-line fix
+name: Finalize v3.12.1 performance fix
 
 on:
   push:
     branches:
       - fix/v3.12.1-transit-sameline
     paths:
-      - .github/apply-v3121.py
-      - .github/fix-apply-v3121.py
+      - .github/hotfix-preview-v3121.py
       - .github/workflows/apply-v3121.yml
 
 permissions:
@@ -20,10 +19,8 @@ jobs:
         with:
           ref: fix/v3.12.1-transit-sameline
           fetch-depth: 0
-      - name: Tighten patch anchors
-        run: python3 .github/fix-apply-v3121.py
-      - name: Apply targeted patch
-        run: python3 .github/apply-v3121.py
+      - name: Remove expensive pending bus preview
+        run: python3 .github/hotfix-preview-v3121.py
       - name: Validate JavaScript
         run: node --check app.js
       - name: Validate targeted invariants
@@ -34,12 +31,13 @@ jobs:
           grep -q "bus_features:busFeatures" app.js
           grep -q "Only other-line corridors close enough" app.js
           grep -q "function reloadGameStateOnce" app.js
+          if grep -q "showBusLineRegionPreview(state.possibleArea" app.js; then exit 1; fi
           if grep -q "Saving .*bus line segments" app.js; then exit 1; fi
           git diff --check
-      - name: Commit application fix
+      - name: Commit final application fix
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app.js
-          git commit -m "v3.12.1: tile bus data and stabilize same-line no"
+          git commit -m "v3.12.1: avoid pending bus Voronoi recompute"
           git push origin HEAD:fix/v3.12.1-transit-sameline
