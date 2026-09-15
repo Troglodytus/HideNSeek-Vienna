@@ -19,7 +19,9 @@ jobs:
       - name: Reset generated files to main
         run: git checkout origin/main -- app.js geometry-worker.js index.html
       - name: Apply patch
-        run: python3 .github/v3133-patch.py
+        run: |
+          python3 .github/v3133-patch.py
+          python3 .github/v3133-postfix.py
       - name: Validate JavaScript
         run: |
           node --check app.js
@@ -32,6 +34,8 @@ jobs:
           grep -F "same_line_apply" app.js
           grep -F "attach_answer_geometry_v1" app.js
           grep -F "answer itself is already recorded" app.js
+          grep -F "heavyFinalizeJobs" app.js
+          grep -F "setTimeout(r,2500)" app.js
           grep -F "map updating…" app.js
           grep -F "state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds()" app.js
           grep -F "state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds()" app.js
@@ -40,6 +44,7 @@ jobs:
           grep -F "create or replace function public.attach_answer_geometry_v1" supabase-v3.13.3-migration.sql
           if grep -Fq "rec=await preparedForAnswer(q,variant)" app.js; then echo 'blocking pre-answer geometry still present'; exit 1; fi
           if grep -Fq "if(!restoreGameMapView())" app.js; then echo 'cached game map restore still used on entry'; exit 1; fi
+          if grep -Fq "possible=await runGeometryWorker('difference_optimize'" app.js; then echo 'automatic Tentacle veto still blocks map replay'; exit 1; fi
           git diff --check
       - name: Show production diff
         run: git diff --stat origin/main -- app.js geometry-worker.js index.html supabase-v3.13.3-migration.sql
