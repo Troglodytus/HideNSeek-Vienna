@@ -422,3 +422,61 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 .answer-pill.a38{background:#7c3aed;color:#fff;border-color:#7c3aed}
 .activity-item.a38-distorted{box-shadow:inset 3px 0 0 #7c3aed}
 .developer-game-actions{flex-wrap:wrap}
+
+/* v3.11.3 layout, compact GPS controls, and role-specific ordering */
+#pendingQuestionsPanel,
+#hiderActionCluster,
+#currentPositionPanel,
+#hiderControls,
+#hiderHandMainPanel,
+#timeTrapsPanel,
+#activeCursePanel,
+#activityPanel { margin-top:10px; }
+
+.layout-hider .game-shell { grid-template-columns:minmax(0,1fr); }
+.layout-hider .main-column { padding-right:12px; }
+.layout-hider .side-column { display:none; }
+
+.hider-action-cluster { display:grid; grid-template-columns:minmax(0,1fr) 150px; gap:8px; margin-top:10px; }
+.hider-action-cluster > .panel { margin-top:0; }
+.layout-hider .hider-action-cluster > .panel,
+.layout-hider #currentPositionPanel,
+.layout-hider #hiderControls .panel { padding:10px 12px; }
+.layout-hider .hider-action-cluster h3,
+.layout-hider #currentPositionPanel h3,
+.layout-hider #hiderControls h3 { font-size:15px; margin-bottom:6px; }
+.layout-hider .hider-action-cluster .location-row,
+.layout-hider #currentPositionPanel .location-row,
+.layout-hider #hiderControls .location-row { margin:7px 0; gap:7px; }
+.layout-hider .hider-action-cluster button,
+.layout-hider #currentPositionPanel button,
+.layout-hider #hiderControls button { padding:8px 10px; font-size:12px; }
+.layout-hider #currentPositionPanel .status-box,
+.layout-hider #hiderControls .status-box { padding:8px 10px; font-size:12px; }
+.layout-hider #hiderControls { display:grid; gap:8px; }
+.layout-hider #hiderControls.hidden { display:none !important; }
+.layout-hider #seekerQuestionLocation { display:none !important; }
+
+.compact-control-panel { padding:12px 14px; box-shadow:none; }
+.compact-control-panel h3 { margin:3px 0 0; }
+.compact-segmented { grid-template-columns:1fr 1fr !important; gap:5px; padding:3px; margin:8px 0; border-radius:10px; }
+.compact-segmented .segment { padding:7px 8px; font-size:12px; border-radius:8px; }
+.compact-location-row { grid-template-columns:repeat(3,minmax(0,1fr)) !important; gap:6px; margin:7px 0; }
+.compact-location-row button { padding:8px 7px; font-size:11px; }
+.layout-seeker #activeCursePanel { border-color:rgba(220,38,38,.18); background:#fffdfd; }
+.time-traps-panel h3,.activity-panel h3,.active-curse-panel h3 { margin:0 0 10px; font-size:16px; }
+
+@media (max-width:860px){
+  .layout-hider .main-column { padding-right:10px; }
+  .layout-hider .side-column { display:none; }
+}
+@media (max-width:520px){
+  .hider-action-cluster { grid-template-columns:minmax(0,1fr) 118px; gap:6px; }
+  .layout-hider .hider-action-cluster > .panel,
+  .layout-hider #currentPositionPanel,
+  .layout-hider #hiderControls .panel { padding:9px 10px; }
+  .compact-location-row { grid-template-columns:repeat(3,minmax(0,1fr)) !important; }
+  .compact-location-row button { padding:7px 5px; font-size:10px; }
+  .compact-segmented { grid-template-columns:1fr 1fr !important; }
+  .compact-segmented .segment { padding:7px 5px; font-size:11px; }
+}

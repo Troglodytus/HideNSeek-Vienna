@@ -1,26 +1,25 @@
-# Hide & Seek: Vienna — v3.11.2
+# Hide & Seek: Vienna — v3.11.3
 
-Small QoL/gameplay patch on top of v3.11.1.
+UI/notification quality-of-life patch on top of v3.11.2. No database migration is required.
 
 ## Changes
 
-- Hider `Hand & draws` now lives in the main game column above ongoing questions and the Question Deck.
-- Automatic Tentacle vetoes now receive the normal Tentacle reward: draw 4, keep 2. Turntables' first-three-questions no-reward rule still overrides this when applicable.
-- Developer → Games now has **View as Hider** and **View as Seeker**. These are read-only previews. Hider preview is authorized by the Developer password and can inspect the private station, hand, traps and other Hider-only state without revealing or requiring the game's Hider password.
-- Added **Curse of the Passierschein A38**:
-  - 10 minute duration.
-  - Custom casting cost: Hider must roll an odd number on a die.
-  - At cast time, each already-answered, currently relevant map-deduction question independently has a 50% chance of being flipped.
-  - The underlying answers are not modified.
-  - The possible-area map is recomputed from the flipped temporary view.
-  - Affected Activity rows are marked `A38 distorted` while the curse is active.
-  - At expiry, the original deductions return automatically.
+- Game map now restores the last center/zoom separately for each game + role. On first entry it fits the whole Vienna boundary instead of opening over-zoomed.
+- Hider layout order is now: map → ongoing questions → compact clock / Hider Found controls → Hider position + Endgame controls → hand & pending draws → Time Traps → active curses → Activity → Question Deck.
+- Hider clock/location/endgame controls are more compact.
+- Seeker Current Position + Question Origin are merged into one compact **GPS mode** panel. Choose Automatic GPS or Manual marker first, then refresh GPS / set on map / clear.
+- Full active-curse panel is moved higher on the Seeker page, directly below GPS mode.
+- Notification sounds now play on both Hider and Seeker clients for:
+  - a question being asked,
+  - a question being answered/resolved,
+  - a curse being played.
+  Curse notifications use a different sound from question notifications.
 
-## Upgrade from v3.11.1
+## Upgrade from v3.11.2
 
-1. Run `supabase-v3.11.2-migration.sql` once in Supabase SQL Editor.
-2. Replace `app.js`, `index.html`, and `styles.css`.
-3. Keep your existing working `config.js`.
-4. Hard refresh and verify Developer shows `BUILD 3.11.2`.
+1. Replace `app.js`, `index.html`, and `styles.css`.
+2. Keep your existing working `config.js`.
+3. No Supabase migration is needed.
+4. Hard refresh and verify Developer shows `BUILD 3.11.3`.
 
 No Vienna reference-data refresh is required.

@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.11.2';
+  const APP_VERSION = '3.11.3';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -117,7 +117,7 @@
     currentPosition:null,currentPositionMarker:null,currentPositionAccuracyCircle:null,
     gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
-    seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
+    seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,notificationPrimed:false,seenNotificationActionIds:new Set(),photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
     developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false
   };
 
@@ -716,19 +716,51 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     $('syncBadge').textContent='READ ONLY';$('syncBadge').className='badge warn';
   }
 
+  function gameMapViewKey(){
+    if(!state.game?.id||!state.role)return null;
+    return `hns_game_map_view_v1_${state.developerPreview?'dev_':''}${state.game.id}_${state.role}`;
+  }
+  function saveGameMapView(){
+    const key=gameMapViewKey();if(!key||!state.gameMap)return;
+    try{const c=state.gameMap.getCenter(),z=state.gameMap.getZoom();if(Number.isFinite(c.lat)&&Number.isFinite(c.lng)&&Number.isFinite(z))localStorage.setItem(key,JSON.stringify({lat:c.lat,lng:c.lng,zoom:z}));}catch(_){}
+  }
+  function restoreGameMapView(){
+    const key=gameMapViewKey();if(!key||!state.gameMap)return false;
+    try{const v=JSON.parse(localStorage.getItem(key)||'null');if(v&&Number.isFinite(Number(v.lat))&&Number.isFinite(Number(v.lng))&&Number.isFinite(Number(v.zoom))){state.gameMap.setView([Number(v.lat),Number(v.lng)],Number(v.zoom),{animate:false});return true;}}catch(_){}
+    return false;
+  }
+  function applyRoleLayout(){
+    const main=$('mainColumn'),side=$('sideColumn');if(!main||!side)return;
+    const pending=$('pendingQuestionsPanel'),actions=$('hiderActionCluster'),position=$('currentPositionPanel'),hider=$('hiderControls'),hand=$('hiderHandMainPanel'),traps=$('timeTrapsPanel'),active=$('activeCursePanel'),activity=$('activityPanel'),questions=$('questionMenu'),seekerControls=$('seekerControls'),endgame=$('seekerEndgamePanel');
+    $('gameView').classList.toggle('layout-hider',state.role==='hider');$('gameView').classList.toggle('layout-seeker',state.role==='seeker');
+    $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker');$('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker');$('hiderControls').classList.toggle('hidden',state.role!=='hider');$('hiderHandMainPanel').classList.toggle('hidden',state.role!=='hider');$('timeTrapsPanel').classList.toggle('hidden',state.role!=='hider');
+    if(state.role==='hider'){
+      $('currentPositionEyebrow').textContent='HIDER POSITION';$('currentPositionTitle').textContent='Location';$('questionOriginStatus').textContent='Private';$('currentGpsButton').textContent='Use phone GPS';
+      [pending,actions,position,hider,hand,traps,active,activity,questions].forEach(el=>el&&main.appendChild(el));
+      if(seekerControls)side.appendChild(seekerControls);
+    }else{
+      $('currentPositionEyebrow').textContent='GPS MODE';$('currentPositionTitle').textContent='GPS mode';$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Automatic GPS':'Manual marker';$('currentGpsButton').textContent='Refresh GPS';
+      [actions,position,active,endgame,pending,questions].forEach(el=>el&&main.appendChild(el));
+      [seekerControls,activity].forEach(el=>el&&side.appendChild(el));
+    }
+  }
+
   async function enterGameCommon(){
-    state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
-    await Promise.all([ensureMapData(),loadQuestionCatalog()]); setupGameMap();
+    state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.notificationPrimed=false;state.seenNotificationActionIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
+    await Promise.all([ensureMapData(),loadQuestionCatalog()]);
     clearDeveloperPreviewLock();
-    $('roleKicker').textContent=`${state.role.toUpperCase()}${state.developerPreview?' · DEV PREVIEW':''}`; $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider'); $('hiderHandMainPanel').classList.toggle('hidden',state.role!=='hider');
-    showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
+    $('roleKicker').textContent=`${state.role.toUpperCase()}${state.developerPreview?' · DEV PREVIEW':''}`; $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker');
+    applyRoleLayout();showView('gameView');setupGameMap();
+    await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
   }
 
   function setupGameMap(){
-    if(!state.gameMap){ state.gameMap=L.map('gameMap',baseMapOptions()); addBaseTiles(state.gameMap); state.gameMap.on('click',e=>handleGameMapClick(e.latlng)); }
-    clearPrivateMapLayers();
-    drawReferenceLayers(state.gameMap,'game-',f=>handleReferenceStationClick(f));
-    state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[5,5]});
+    if(!state.gameMap){
+      state.gameMap=L.map('gameMap',baseMapOptions());addBaseTiles(state.gameMap);state.gameMap.on('click',e=>handleGameMapClick(e.latlng));state.gameMap.on('moveend',saveGameMapView);
+    }
+    state.gameMap.invalidateSize(false);clearPrivateMapLayers();drawReferenceLayers(state.gameMap,'game-',f=>handleReferenceStationClick(f));
+    if(!restoreGameMapView())state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});
+    setTimeout(()=>{state.gameMap?.invalidateSize(false);if(!restoreGameMapView())state.gameMap?.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});},80);
   }
 
   function handleReferenceStationClick(feature){
@@ -1464,7 +1496,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     state.timeTraps=snap.time_traps||[];state.privateCardUses=snap.private_card_uses||[];state.seekerLivePosition=snap.seeker_live_position||null;state.deckStatus=snap.deck_status||null;
   }
   async function reloadGameState(){
-    await reloadGamePublic();await reloadActions();
+    await reloadGamePublic();await reloadActions();processActionNotifications();
     if(state.developerPreview&&state.role==='hider')await reloadDeveloperHiderPreview();
     else {if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();}
     deriveLocalState();await recomputePossibleArea();renderAll();
@@ -1801,11 +1833,19 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     const {error}=await state.supabase.rpc('complete_curse_v1',{p_game_id:state.game.id,p_curse_action_id:actionId});if(error)throw error;await reloadGameState();
   }
   function unlockCurseAudio(){try{const Ctx=window.AudioContext||window.webkitAudioContext;if(!Ctx)return;if(!state.audioCtx)state.audioCtx=new Ctx();if(state.audioCtx.state==='suspended')state.audioCtx.resume().catch(()=>{});}catch(_){} }
-  function playCurseSound(){
-    try{
-      unlockCurseAudio();const ctx=state.audioCtx;if(!ctx||ctx.state==='suspended')return;const gain=ctx.createGain();gain.connect(ctx.destination);gain.gain.setValueAtTime(.0001,ctx.currentTime);gain.gain.exponentialRampToValueAtTime(.16,ctx.currentTime+.02);gain.gain.exponentialRampToValueAtTime(.0001,ctx.currentTime+.7);
-      const o1=ctx.createOscillator(),o2=ctx.createOscillator();o1.type='sine';o2.type='triangle';o1.frequency.setValueAtTime(740,ctx.currentTime);o1.frequency.exponentialRampToValueAtTime(420,ctx.currentTime+.55);o2.frequency.setValueAtTime(1110,ctx.currentTime);o2.frequency.exponentialRampToValueAtTime(620,ctx.currentTime+.55);o1.connect(gain);o2.connect(gain);o1.start();o2.start(ctx.currentTime+.08);o1.stop(ctx.currentTime+.65);o2.stop(ctx.currentTime+.65);
-    }catch(e){console.warn('Curse sound unavailable',e);}
+  function playToneSequence(notes,{volume=.11,type='sine'}={}){
+    try{unlockCurseAudio();const ctx=state.audioCtx;if(!ctx||ctx.state==='suspended')return;const start=ctx.currentTime+.01;notes.forEach((n,i)=>{const o=ctx.createOscillator(),g=ctx.createGain(),t=start+(n.at??i*.12),dur=n.duration??.16;o.type=n.type||type;o.frequency.setValueAtTime(n.freq,t);g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(n.volume??volume,t+.015);g.gain.exponentialRampToValueAtTime(.0001,t+dur);o.connect(g);g.connect(ctx.destination);o.start(t);o.stop(t+dur+.02);});}catch(e){console.warn('Notification sound unavailable',e);}
+  }
+  function playQuestionSound(kind){
+    if(kind==='asked')playToneSequence([{freq:659,duration:.14},{freq:880,at:.13,duration:.2}],{volume:.10,type:'sine'});
+    else playToneSequence([{freq:523,duration:.12},{freq:659,at:.11,duration:.12},{freq:784,at:.22,duration:.22}],{volume:.095,type:'triangle'});
+  }
+  function playCurseSound(){playToneSequence([{freq:988,duration:.18,type:'square'},{freq:659,at:.12,duration:.24,type:'triangle'},{freq:392,at:.28,duration:.38,type:'sine'}],{volume:.09});}
+  function processActionNotifications(){
+    const rows=(state.actions||[]).filter(a=>['question','answer','question_veto','curse_play'].includes(a.kind));const ids=new Set(rows.map(a=>String(a.id)));
+    if(!state.notificationPrimed){state.seenNotificationActionIds=ids;state.notificationPrimed=true;return;}
+    const incoming=rows.filter(a=>!state.seenNotificationActionIds.has(String(a.id))).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
+    incoming.forEach(a=>{state.seenNotificationActionIds.add(String(a.id));if(a.kind==='question')playQuestionSound('asked');else if(a.kind==='answer'||a.kind==='question_veto')playQuestionSound('answered');else if(a.kind==='curse_play')playCurseSound();});
   }
   function renderActiveCurses(){
     const now=serverNowMs();const curses=activeCurseActions(now);renderCurseMapOverlays(curses);
@@ -1822,7 +1862,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(state.role!=='seeker'||!seekerCurses.length){strip.classList.add('hidden');strip.innerHTML='';if(state.role!=='seeker'){state.curseSoundPrimed=false;state.seenCurseIds=new Set();}return;}
     strip.classList.remove('hidden');strip.innerHTML=seekerCurses.map(a=>{const end=a.payload?.ends_at?new Date(a.payload.ends_at).getTime():null,rem=end?Math.max(0,Math.ceil((end-now)/1000)):null,extra=curseExtraText(a);return `<div class="curse-chip curse-chip-wide"><span class="curse-chip-icon">⚠</span><span><strong>${escapeHtml(a.payload?.title||'Curse')}</strong>${extra?`<em>${escapeHtml(extra)}</em>`:''}<small>${rem===null?'ACTIVE':formatCountdown(rem)}</small>${manualCurseButton(a)}</span></div>`;}).join('');
     strip.querySelectorAll('[data-complete-curse]').forEach(b=>{if(b.dataset.bound)return;b.dataset.bound='1';b.addEventListener('click',()=>completePublicCurse(b.dataset.completeCurse).catch(handleError));});
-    const ids=new Set(seekerCurses.map(a=>a.id));if(!state.curseSoundPrimed){state.seenCurseIds=ids;state.curseSoundPrimed=true;}else{const incoming=seekerCurses.filter(a=>!state.seenCurseIds.has(a.id));if(incoming.length){incoming.forEach(a=>state.seenCurseIds.add(a.id));playCurseSound();toast(`CURSED: ${incoming.map(a=>a.payload?.title||'Curse').join(', ')}`,5000);}}
+    const ids=new Set(seekerCurses.map(a=>a.id));if(!state.curseSoundPrimed){state.seenCurseIds=ids;state.curseSoundPrimed=true;}else{const incoming=seekerCurses.filter(a=>!state.seenCurseIds.has(a.id));if(incoming.length){incoming.forEach(a=>state.seenCurseIds.add(a.id));toast(`CURSED: ${incoming.map(a=>a.payload?.title||'Curse').join(', ')}`,5000);}}
   }
 
   function canToggleAction(a){if(['time_trap_place','time_trap_trigger','endgame_zone','game_finish','turntables_relocate','powerup_play','powerup_draw'].includes(a.kind))return false;if(a.kind==='curse_play'&&(a.payload?.effect_key==='turntables'||a.payload?.reset_by_turntables))return false;if(state.role==='hider')return a.actor==='hider';if(state.role==='seeker')return a.actor==='seeker';return false;}
@@ -2349,8 +2389,8 @@ ${failures.join('\n')}`,9000);
 
   function leaveGame(){
     const returnToDeveloper=!!state.developerPreview;
-    if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();state.mapLayers.curseEffects?.remove();state.mapLayers.cursePreview?.remove();state.mapLayers.curseEffects=null;state.mapLayers.cursePreview=null;state.curseMapSignature=null;clearDeveloperPreviewLock();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();
-    if(returnToDeveloper&&state.developerPassword){showView('developerView');$('developerLoginPanel').classList.add('hidden');$('developerPanel').classList.remove('hidden');showDeveloperTab('games');loadDeveloperDashboard().catch(handleError);}else showView('homeView');
+    if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();state.mapLayers.curseEffects?.remove();state.mapLayers.cursePreview?.remove();state.mapLayers.curseEffects=null;state.mapLayers.cursePreview=null;state.curseMapSignature=null;clearDeveloperPreviewLock();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,notificationPrimed:false,seenNotificationActionIds:new Set(),sameLineSelection:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();
+    $('gameView').classList.remove('layout-hider','layout-seeker');if(returnToDeveloper&&state.developerPassword){showView('developerView');$('developerLoginPanel').classList.add('hidden');$('developerPanel').classList.remove('hidden');showDeveloperTab('games');loadDeveloperDashboard().catch(handleError);}else showView('homeView');
   }
 
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
@@ -2361,7 +2401,7 @@ ${failures.join('\n')}`,9000);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
     $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
-    document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Fresh GPS for each question':'Use the current/manual map marker';if(state.seekerOriginMode==='map')beginManualCurrentPosition();}));
+    document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Automatic GPS':'Manual marker';}));
     $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{stopGpsAutoTracking();state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';renderQuestionDeck();});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your hiding spot.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));$('seekerEndgameButton').addEventListener('click',()=>{state.seekerEndgamePickMode=true;cancelQuestionPreview();toast('Tap the station you believe is correct.');});$('hiderFoundButton').addEventListener('click',()=>finishGame().catch(handleError));$('startGameClockButton').addEventListener('click',()=>setGameClock('start').catch(handleError));$('pauseGameClockButton').addEventListener('click',()=>setGameClock('pause').catch(handleError));$('turntablesPickButton').addEventListener('click',()=>{if(!activeTurntablesAction())return;state.turntablesPickMode=true;state.turntablesCandidate=null;state.mapLayers.turntablesCandidate?.remove();state.mapLayers.turntablesCandidate=null;renderTurntablesPanel();toast('Tap a different station marker on the map.');});$('turntablesConfirmButton').addEventListener('click',()=>confirmTurntablesStation().catch(handleError));$('turntablesCancelButton').addEventListener('click',clearTurntablesCandidate);$('castCancel').addEventListener('click',()=>closeCastModal(null));$('castConfirm').addEventListener('click',()=>closeCastModal([...$('castOptions').querySelectorAll('input:checked')].map(x=>x.value)));$('photoModalClose').addEventListener('click',closePhotoModal);$('photoModal').addEventListener('click',e=>{if(e.target===$('photoModal'))closePhotoModal();});
   }
 

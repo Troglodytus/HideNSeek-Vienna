@@ -7,7 +7,7 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css?v=3.11.2" />
+  <link rel="stylesheet" href="./styles.css?v=3.11.3" />
 </head>
 <body>
   <main id="app">
@@ -72,7 +72,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.11.2</div><h2>Developer</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.11.3</div><h2>Developer</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -147,9 +147,9 @@
       </header>
 
       <div class="game-shell">
-        <div class="main-column">
+        <div id="mainColumn" class="main-column">
           <div id="seekerCurseStrip" class="seeker-curse-strip hidden" aria-live="assertive"></div>
-          <div class="map-wrap">
+          <div id="mapWrap" class="map-wrap">
             <div id="gameMap" class="map map-main"></div>
             <div class="map-legend">
               <span><i class="swatch possible"></i> possible</span>
@@ -159,32 +159,37 @@
             </div>
           </div>
 
-          <section id="gameClockControls" class="panel game-clock-controls hidden">
-            <div class="row-between"><div><div class="eyebrow">GAME TIME</div><h3>Game Clock</h3></div><span id="gameClockStatus" class="mini-status">Paused</span></div>
-            <div class="location-row"><button id="startGameClockButton" class="primary">Start game time</button><button id="pauseGameClockButton" class="secondary" disabled>Pause</button></div>
+          <section id="pendingQuestionsPanel" class="panel pending-questions-panel">
+            <div class="row-between"><div><div class="eyebrow">ONGOING</div><h3>Current questions</h3></div><span id="pendingQuestionCount" class="mini-status"></span></div>
+            <div id="pendingQuestions" class="question-list"></div>
           </section>
 
-          <section id="finishGamePanel" class="panel finish-game-panel">
-            <div id="finalScoreSummary" class="final-score-summary hidden"></div>
-            <button id="hiderFoundButton" class="danger full">Hider Found</button>
-          </section>
+          <div id="hiderActionCluster" class="hider-action-cluster">
+            <section id="gameClockControls" class="panel game-clock-controls hidden">
+              <div class="row-between"><div><div class="eyebrow">GAME TIME</div><h3>Game Clock</h3></div><span id="gameClockStatus" class="mini-status">Paused</span></div>
+              <div class="location-row"><button id="startGameClockButton" class="primary">Start</button><button id="pauseGameClockButton" class="secondary" disabled>Pause</button></div>
+            </section>
 
-          <section id="currentPositionPanel" class="panel current-position-panel">
-            <div class="row-between"><div><div class="eyebrow">CURRENT POSITION</div><h3>Set your position</h3></div></div>
-            <div class="location-row three">
-              <button id="currentGpsButton" class="secondary">Use phone GPS</button>
+            <section id="finishGamePanel" class="panel finish-game-panel">
+              <div id="finalScoreSummary" class="final-score-summary hidden"></div>
+              <button id="hiderFoundButton" class="danger full">Hider Found</button>
+            </section>
+          </div>
+
+          <section id="currentPositionPanel" class="panel current-position-panel compact-control-panel">
+            <div class="row-between"><div><div id="currentPositionEyebrow" class="eyebrow">GPS MODE</div><h3 id="currentPositionTitle">GPS mode</h3></div><span id="questionOriginStatus" class="mini-status">Automatic GPS</span></div>
+            <div id="seekerQuestionLocation" class="gps-mode-switch hidden">
+              <div class="segmented origin-segmented compact-segmented">
+                <button id="originGpsMode" class="segment active" data-origin-mode="gps">Automatic GPS</button>
+                <button id="originMapMode" class="segment" data-origin-mode="map">Manual marker</button>
+              </div>
+            </div>
+            <div class="location-row three compact-location-row">
+              <button id="currentGpsButton" class="secondary">Refresh GPS</button>
               <button id="currentMapButton" class="secondary">Set on map</button>
               <button id="currentClearButton" class="secondary">Clear</button>
             </div>
             <div id="currentPositionStatus" class="status-box">No current position set.</div>
-          </section>
-
-          <section id="seekerQuestionLocation" class="panel question-origin-panel hidden">
-            <div class="row-between"><div><div class="eyebrow">QUESTION ORIGIN</div><h3>Where are the seekers?</h3></div><span id="questionOriginStatus" class="mini-status">GPS for each question</span></div>
-            <div class="segmented origin-segmented">
-              <button id="originGpsMode" class="segment active" data-origin-mode="gps">Automatic current location</button>
-              <button id="originMapMode" class="segment" data-origin-mode="map">Use manual/current marker</button>
-            </div>
           </section>
 
           <section id="seekerEndgamePanel" class="panel hidden">
@@ -192,36 +197,9 @@
             <button id="seekerEndgameButton" class="secondary full">Start Endgame</button>
           </section>
 
-          <section id="hiderHandMainPanel" class="panel hider-hand-main hidden">
-            <div class="row-between"><div><div class="eyebrow">HIDER HAND</div><h3>Hand &amp; draws</h3></div><span id="bonusTotal" class="mini-status"></span></div>
-            <div id="curseDraws" class="curse-draw-list"></div>
-          </section>
-
-          <section id="pendingQuestionsPanel" class="panel pending-questions-panel">
-            <div class="row-between"><div><div class="eyebrow">ONGOING</div><h3>Current questions</h3></div><span id="pendingQuestionCount" class="mini-status"></span></div>
-            <div id="pendingQuestions" class="question-list"></div>
-          </section>
-
-          <section class="question-menu panel">
-            <div class="row-between question-menu-heading">
-              <div><div class="eyebrow">QUESTION DECK</div><h3>Choose a question</h3></div>
-              <span id="questionDeckStatus" class="mini-status"></span>
-            </div>
-            <div id="questionDeck" class="question-deck"></div>
-          </section>
-        </div>
-
-        <aside class="side-column">
-          <div id="seekerControls" class="role-controls hidden">
-            <div class="panel compact">
-              <h3>Latest question location</h3>
-              <div id="seekerLocationStatus" class="status-box">No question location has been sent.</div>
-            </div>
-          </div>
-
           <div id="hiderControls" class="role-controls hidden">
-            <div class="panel compact private-panel">
-              <div class="row-between"><h3>Hider</h3><span class="private-badge">PRIVATE</span></div>
+            <section id="hiderLocationPanel" class="panel compact private-panel">
+              <div class="row-between"><h3>Hider location &amp; Endgame</h3><span class="private-badge">PRIVATE</span></div>
               <div id="hiderSecretStatus" class="status-box"></div>
               <div class="eyebrow seeker-tracking-label">SEEKER GPS</div><div id="hiderSeekerLiveStatus" class="status-box">No seeker GPS position has been published yet.</div>
               <button id="prepareEndgameButton" class="secondary full">Set actual hiding spot</button>
@@ -230,26 +208,49 @@
                 <div id="endgameLocationStatus" class="status-box">No final hiding spot selected yet.</div>
               </div>
               <button id="toggleEndgameButton" class="primary full hidden"></button>
-            </div>
-            <div id="turntablesPanel" class="panel compact turntables-panel hidden">
+            </section>
+            <section id="turntablesPanel" class="panel compact turntables-panel hidden">
               <div class="row-between"><div><div class="eyebrow">ULTIMATE CARD</div><h3>Turntables relocation</h3></div><span id="turntablesPanelTimer" class="turntables-panel-timer">20:00</span></div>
               <div id="turntablesStatus" class="status-box">Choose a different hiding station before time runs out.</div>
               <div class="location-row three"><button id="turntablesPickButton" class="danger">Choose new station</button><button id="turntablesConfirmButton" class="primary hidden">Confirm station</button><button id="turntablesCancelButton" class="secondary hidden">Cancel</button></div>
-            </div>
-            <div class="panel compact">
-              <h3>Time traps</h3>
-              <div id="timeTraps" class="question-list"></div>
-            </div>
+            </section>
           </div>
 
-          <div class="panel compact active-curse-panel">
+          <section id="hiderHandMainPanel" class="panel hider-hand-main hidden">
+            <div class="row-between"><div><div class="eyebrow">HIDER HAND</div><h3>Hand &amp; draws</h3></div><span id="bonusTotal" class="mini-status"></span></div>
+            <div id="curseDraws" class="curse-draw-list"></div>
+          </section>
+
+          <section id="timeTrapsPanel" class="panel compact time-traps-panel hidden">
+            <h3>Time traps</h3>
+            <div id="timeTraps" class="question-list"></div>
+          </section>
+
+          <section id="activeCursePanel" class="panel compact active-curse-panel">
             <div class="row-between"><h3>Active cards / curses</h3><span id="serverClockStatus" class="mini-status"></span></div>
             <div id="activeCurses" class="curse-list"></div>
-          </div>
+          </section>
 
-          <div class="panel compact">
+          <section id="activityPanel" class="panel compact activity-panel">
             <div class="row-between"><h3>Activity</h3><span id="remainingAreaText" class="mini-status"></span></div>
             <div id="activityHistory" class="question-list"></div>
+          </section>
+
+          <section id="questionMenu" class="question-menu panel">
+            <div class="row-between question-menu-heading">
+              <div><div class="eyebrow">QUESTION DECK</div><h3>Choose a question</h3></div>
+              <span id="questionDeckStatus" class="mini-status"></span>
+            </div>
+            <div id="questionDeck" class="question-deck"></div>
+          </section>
+        </div>
+
+        <aside id="sideColumn" class="side-column">
+          <div id="seekerControls" class="role-controls hidden">
+            <div class="panel compact">
+              <h3>Latest question location</h3>
+              <div id="seekerLocationStatus" class="status-box">No question location has been sent.</div>
+            </div>
           </div>
         </aside>
       </div>
@@ -290,6 +291,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.11.2"></script>
+  <script src="./app.js?v=3.11.3"></script>
 </body>
 </html>
