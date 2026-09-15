@@ -801,7 +801,8 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(!state.gameMap){
       state.gameMap=L.map('gameMap',baseMapOptions());addBaseTiles(state.gameMap);state.gameMap.on('click',e=>handleGameMapClick(e.latlng));state.gameMap.on('moveend',saveGameMapView);
     }
-    if(!state.heavyCanvasRenderer)state.heavyCanvasRenderer=L.canvas({padding:.5,tolerance:4});
+    if(!state.gameMap.getPane('heavyGeometryPane')){const pane=state.gameMap.createPane('heavyGeometryPane');pane.style.zIndex='350';pane.style.pointerEvents='none';}
+    if(!state.heavyCanvasRenderer)state.heavyCanvasRenderer=L.canvas({pane:'heavyGeometryPane',padding:.5,tolerance:4});
     state.gameMap.invalidateSize(false);clearPrivateMapLayers();drawReferenceLayers(state.gameMap,'game-',f=>handleReferenceStationClick(f));
     if(!restoreGameMapView())state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});
     setTimeout(()=>{state.gameMap?.invalidateSize(false);if(!restoreGameMapView())state.gameMap?.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});},80);

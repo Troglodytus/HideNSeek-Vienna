@@ -89,7 +89,7 @@ function sameLineFinal(payload){
   for(const f of payload.stations||[]){
     const lineRefs=[...new Set((f.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()).filter(r=>/^[US]\d+/i.test(r)))];
     if(lineRefs.length<2 || !lineRefs.some(r=>selectedSet.has(r))) continue;
-    try { stationParts.push(turf.buffer(f,radiusM/1000,{units:'kilometers',steps:10})); } catch(_){}
+    try { stationParts.push(turf.buffer(f,radiusM/1000,{units:'kilometers',steps:12})); } catch(_){}
   }
   let preserve=unionList(stationParts),search=corridor;
   try { search=turf.buffer(corridor,radiusM/1000,{units:'kilometers',steps:8}); } catch(_){}
