@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.12.1';
+  const APP_VERSION = '3.13.0';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -11,7 +11,7 @@
   const TENTACLE_VALID_DISTANCE_M = 250;
   const TENTACLE_SEARCH_RADIUS_M = 5000;
   const BUS_TENTACLE_SEARCH_BUFFER_M = 1000;
-  const BUS_TENTACLE_GRID_M = 20;
+  const BUS_TENTACLE_GRID_M = 15;
   const VOR_NAV_DURATION_SECONDS = 180;
   const CACHE_KEY = 'hns_vienna_osm_v10';
   const CACHE_TS_KEY = 'hns_vienna_osm_v10_ts';
@@ -56,8 +56,10 @@
   const DEFAULT_QUESTION_CARDS = [
     { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
     { slot:'same-line', category:'MIXED', title:'On This U-/S-Bahn Line?', detail:'Choose a line. Is the hiding station served by it?', kind:'same_line' },
-    { slot:'station-interchange', category:'TENTACLES', title:'Nearest Bus Line', detail:'Endgame only: among Vienna bus lines crossing or within 1 km of the remaining area, keep the area closest to the answered line.', kind:'bus_line_tentacle', endgame_only:true, search_buffer_m:BUS_TENTACLE_SEARCH_BUFFER_M },
-    { slot:'street-shape', category:'MIXED', title:'VOR Navigation', detail:'Endgame only: 3 minutes of a live 30° direction sector toward the hiding spot. No Hider answer required.', kind:'vor_navigation', endgame_only:true, duration_seconds:VOR_NAV_DURATION_SECONDS },
+    { slot:'station-interchange', category:'MIXED', title:'Nearest Station an Interchange?', detail:'Is the hiding station served by at least two U-/S-Bahn lines?', kind:'station_interchange' },
+    { slot:'street-shape', category:'MIXED', title:'Current Street Shape', detail:'Endgame only: receive a hand-drawn outline of the Hider’s nearest street.', kind:'street_shape', endgame_only:true },
+    { slot:'nearest-bus-line', category:'TENTACLES', title:'Nearest Bus Line', detail:'Endgame only: among Vienna bus lines crossing or within 1 km of the remaining area, keep the territory closest to the answered line.', kind:'bus_line_tentacle', endgame_only:true, search_buffer_m:BUS_TENTACLE_SEARCH_BUFFER_M },
+    { slot:'vor-navigation', category:'MIXED', title:'VOR Navigation', detail:'Endgame only: 3 minutes of a live 30° direction sector toward the hiding spot. No Hider answer required.', kind:'vor_navigation', endgame_only:true, duration_seconds:VOR_NAV_DURATION_SECONDS },
     { slot:'transdanubia', category:'MIXED', title:'In Mordor?', detail:'Is the target across the Danube in district 21 or 22?', kind:'district_set', districts:[21,22], yes_label:'Yes', no_label:'No' },
     { slot:'inner-districts', category:'MIXED', title:'Inner Districts?', detail:'Is the target in districts 1–9?', kind:'district_set', districts:[1,2,3,4,5,6,7,8,9], yes_label:'Yes', no_label:'No' },
     { slot:'stephansdom-benchmark', category:'MIXED', title:'Closer to Stephansdom?', detail:'Is the target closer to Stephansdom than you are?', kind:'landmark_compare', landmark_name:'Stephansdom', landmark:{lat:48.20849,lng:16.37208} },
@@ -167,7 +169,7 @@
 
   function normalizeQuestionRow(r){
     const p=(r&&typeof r.params==='object'&&r.params)||{};
-    return {slot:r.question_key,category:r.category,title:r.title,detail:r.description,kind:(p.engine_kind||r.question_kind),endgame_only:!!r.endgame_only,...p};
+    return {slot:r.question_key,category:r.category,title:r.title,detail:r.description,kind:r.question_kind,endgame_only:!!r.endgame_only,...p};
   }
   async function loadQuestionCatalog(){
     initSupabaseIfNeeded();
@@ -326,28 +328,6 @@
     if(!out.length)throw new Error('Vienna public-transport WFS returned no U-Bahn/S-Bahn line geometry.');
     return out;
   }
-  function busRefsFromProps(props){
-    const values=Object.values(props||{}).filter(v=>typeof v==='string'&&v.trim());
-    const modeText=values.join(' ');
-    if(!/(?:^|\b)(?:autobus|stadtbus|regionalbus|nachtbus|bus)(?:\b|$)/i.test(modeText))return [];
-    const preferred=firstStringProp(props,['LBEZEICHNUNG','LINIEN','LINIE','LINE','ROUTE','BEZEICHNUNG']);
-    const source=preferred||modeText;const refs=[];const seen=new Set();
-    for(const m of source.toUpperCase().matchAll(/(?:^|[\s,;/])((?:N)?\d{1,3}[A-Z]?|VAL\s*\d{1,2})(?=$|[\s,;/])/g)){
-      const ref=m[1].replace(/\s+/g,'');if(!seen.has(ref)){seen.add(ref);refs.push(ref);}
-    }
-    return refs;
-  }
-  function normalizeOfficialBusLines(geo){
-    const out=[];
-    for(const f of (geo?.features||[])){
-      const refs=busRefsFromProps(f.properties||{});if(!refs.length)continue;
-      for(const line of flattenLineFeatures(f)){
-        line.properties={...(line.properties||{}),transitMode:'bus',routeRefs:refs,routeRef:refs[0]||'',routeName:refs.join(', '),source:'Stadt Wien OGD'};
-        out.push(line);
-      }
-    }
-    return out;
-  }
   function pointFromFeature(f){
     if(!f?.geometry)return null;
     try{
@@ -376,6 +356,35 @@
     }
     return [...best.entries()].sort((a,b)=>a[1]-b[1]).map(x=>x[0]);
   }
+
+  function busRefsFromProps(props){
+    const values=Object.values(props||{}).filter(v=>typeof v==='string'&&v.trim());
+    const text=values.join(' ');
+    const preferred=firstStringProp(props,['LBEZEICHNUNG','LINIEN','LINIE','LINE','ROUTE','BEZEICHNUNG','LTEXT'])||text;
+    const refs=[],seen=new Set();
+    for(const m of preferred.toUpperCase().matchAll(/(?:^|[\s,;/])((?:N)?\d{1,3}[A-Z]?|VAL\s*\d{1,2})(?=$|[\s,;/])/g)){
+      const ref=m[1].replace(/\s+/g,'');if(!seen.has(ref)){seen.add(ref);refs.push(ref);}
+    }
+    if(!refs.length)return [];
+    const explicitMode=firstStringProp(props,['VERKEHRSMITTEL','VERKEHRSMITTELART','VMITTEL','MITTEL','MODE','TYP','ART'])||text;
+    const modeSaysBus=/(?:^|\b)(?:autobus|stadtbus|regionalbus|nachtbus|schnellbus|bus)(?:\b|$)/i.test(explicitMode);
+    const codeSaysBus=refs.some(r=>/^N\d/i.test(r)||/^\d{1,2}[A-Z]$/i.test(r)||/^\d{3}$/i.test(r)||/^VAL\d+/i.test(r));
+    if(!modeSaysBus&&!codeSaysBus)return [];
+    return refs.filter(r=>!/^U\d+/i.test(r)&&!/^S\d+/i.test(r));
+  }
+  function normalizeOfficialBusLines(geo){
+    const out=[],seen=new Set();
+    for(const f of (geo?.features||[])){
+      const refs=busRefsFromProps(f.properties||{});if(!refs.length)continue;
+      for(const line of flattenLineFeatures(f)){
+        const key=`${refs.join(',')}|${JSON.stringify(line.geometry?.coordinates||[])}`;if(seen.has(key))continue;seen.add(key);
+        line.properties={...(line.properties||{}),transitMode:'bus',routeRefs:refs,routeRef:refs[0]||'',routeName:refs.join(', '),source:'Stadt Wien OGD'};
+        out.push(line);
+      }
+    }
+    return out;
+  }
+
   function normalizeOfficialStations(ubahnGeo,allStopsGeo,railLines,city){
     // v3.3.4: use the authoritative line attributes on the Vienna stop layers.
     // Previous builds tried to infer S-Bahn membership by measuring every one of
@@ -497,7 +506,7 @@
       referenceDataset(REF_ADMIN_KEY),referenceDataset(REF_STATIONS_KEY),referenceDataset(REF_TRANSIT_KEY)
     ]);
     if(!validateReferenceCore(admin,stations))return false;
-    state.mapData={city:admin.city,districts:admin.districts,stations:stations.stations,railLines:Array.isArray(transit?.railLines)?transit.railLines:[],busLines:Array.isArray(transit?.busLines)?transit.busLines:[]};
+    state.mapData={city:admin.city,districts:admin.districts,stations:stations.stations,railLines:Array.isArray(transit?.railLines)?transit.railLines:[]};
     if(!state.mapData.railLines.length)setTimeout(()=>loadRailLinesInBackground(false),0);
     return true;
   }
@@ -830,62 +839,6 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   async function useCurrentGps(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();$('currentPositionStatus').textContent+=' · auto 30 min';toast('GPS set.');}
   function beginManualCurrentPosition(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);stopGpsAutoTracking();state.pickMode='current_position';toast('Tap the map to set your position.');}
 
-  function normalizeDegrees(v){v=Number(v)%360;return v<0?v+360:v;}
-  function vorHeadingFromEvent(e){
-    let h=null;if(Number.isFinite(Number(e?.webkitCompassHeading)))h=Number(e.webkitCompassHeading);
-    else if(e?.absolute&&Number.isFinite(Number(e.alpha)))h=360-Number(e.alpha);
-    if(h===null)return null;const screenAngle=Number(screen.orientation?.angle??window.orientation??0)||0;return normalizeDegrees(h+screenAngle);
-  }
-  function attachVorOrientation(){
-    if(state.vorOrientationHandler)return;state.vorOrientationHandler=e=>{const h=vorHeadingFromEvent(e);if(h===null)return;state.vorHeading=h;state.vorCompassPermission='granted';renderVorNavigation();};
-    window.addEventListener('deviceorientationabsolute',state.vorOrientationHandler,true);window.addEventListener('deviceorientation',state.vorOrientationHandler,true);
-  }
-  async function enableVorCompass(){
-    try{
-      if(typeof DeviceOrientationEvent==='undefined'){state.vorCompassPermission='unsupported';renderVorNavigation();return;}
-      if(typeof DeviceOrientationEvent.requestPermission==='function'){
-        const result=await DeviceOrientationEvent.requestPermission();if(result!=='granted'){state.vorCompassPermission='denied';renderVorNavigation();return;}
-      }
-      attachVorOrientation();state.vorCompassPermission='granted';renderVorNavigation();
-    }catch(e){console.warn('Compass permission failed',e);state.vorCompassPermission='denied';renderVorNavigation();}
-  }
-  function activeVorNavigation(){
-    const questions=effectiveActions('question').filter(q=>q.payload?.question_kind==='vor_navigation').sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
-    for(const q of questions){const a=activeAnswerForQuestion(q.id),answer=a?.payload?.answer;if(answer?.type!=='vor_navigation')continue;const expiry=new Date(answer.expires_at||new Date(q.created_at).getTime()+Number(q.payload?.duration_seconds||VOR_NAV_DURATION_SECONDS)*1000).getTime();if(expiry>serverNowMs())return{question:q,answer,expiry};}
-    return null;
-  }
-  async function requestVorBearing(q,{force=false}={}){
-    if(!q||state.role!=='seeker'||state.vorBearingBusy)return;const now=Date.now();if(!force&&now-state.vorLastBearingFetch<1200)return;state.vorLastBearingFetch=now;state.vorBearingBusy=true;
-    try{const {data,error}=await state.supabase.rpc('get_vor_navigation_bearing_v1',{p_game_id:state.game.id,p_question_action_id:q.id});if(error)throw error;const row=(data||[])[0];if(row&&Number.isFinite(Number(row.bearing_deg))){state.vorBearing=normalizeDegrees(Number(row.bearing_deg));state.vorExpiresAt=new Date(row.expires_at).getTime();}}
-    catch(e){console.warn('VOR bearing refresh failed',e);}finally{state.vorBearingBusy=false;}
-  }
-  function startVorTracking(q){
-    if(state.role!=='seeker'||!q)return;
-    if(state.vorGeoWatchId===null&&navigator.geolocation){
-      state.vorGeoWatchId=navigator.geolocation.watchPosition(pos=>{const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false});publishSeekerLivePosition(p).then(()=>requestVorBearing(q,{force:true})).catch(e=>console.warn('VOR live GPS publish failed',e));},e=>console.warn('VOR live GPS unavailable',e),{enableHighAccuracy:true,maximumAge:1000,timeout:10000});
-    }
-    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
-    if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
-  }
-  function stopVorTracking(){
-    if(state.vorGeoWatchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(state.vorGeoWatchId);}catch(_){}}state.vorGeoWatchId=null;
-    if(state.vorOrientationHandler){window.removeEventListener('deviceorientationabsolute',state.vorOrientationHandler,true);window.removeEventListener('deviceorientation',state.vorOrientationHandler,true);}state.vorOrientationHandler=null;
-    if(state.vorRenderTimer)clearInterval(state.vorRenderTimer);state.vorRenderTimer=null;state.vorQuestionId=null;state.vorBearing=null;state.vorHeading=null;state.vorExpiresAt=0;state.vorLastBearingFetch=0;state.vorBearingBusy=false;
-  }
-  function renderVorNavigation(){
-    const panel=$('vorNavigationPanel');if(!panel)return;const active=state.role==='seeker'?activeVorNavigation():null;
-    if(!active){panel.classList.add('hidden');if(state.vorQuestionId)stopVorTracking();return;}
-    panel.classList.remove('hidden');state.vorQuestionId=active.question.id;state.vorExpiresAt=active.expiry;startVorTracking(active.question);requestVorBearing(active.question).catch(()=>{});
-    const remaining=Math.max(0,Math.ceil((active.expiry-serverNowMs())/1000));$('vorNavigationTimer').textContent=formatCountdown(remaining);
-    const sector=$('vorSector'),north=$('vorNorthRing'),heading=Number.isFinite(state.vorHeading)?state.vorHeading:null,bearing=Number.isFinite(state.vorBearing)?state.vorBearing:null;
-    if(bearing!==null){const angle=normalizeDegrees(bearing-(heading??0));sector?.style.setProperty('--vor-angle',`${angle}deg`);sector?.classList.add('ready');}
-    else sector?.classList.remove('ready');
-    north?.style.setProperty('--vor-north-angle',`${heading===null?0:normalizeDegrees(-heading)}deg`);
-    const compassLive=heading!==null;const status=$('vorNavigationStatus');if(status)status.textContent=bearing===null?'Waiting for current GPS bearing…':compassLive?'Live compass · red 30° sector points toward the Hider.':'North-up fallback · red 30° sector points toward the Hider.';
-    const button=$('vorCompassButton');if(button){const canAsk=typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function';button.classList.toggle('hidden',compassLive||!canAsk);button.textContent=state.vorCompassPermission==='denied'?'Compass denied · north-up mode':'Enable compass';}
-    if(remaining<=0){panel.classList.add('hidden');stopVorTracking();}
-  }
-
 
   function cancelQuestionPreview(){
     state.previewQuestionSlot=null;state.previewQuestionCard=null;state.pendingQuestionCard=null;if(state.pickMode==='question')state.pickMode=null;clearPendingOverlay();clearPoiPreview();
@@ -919,14 +872,12 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     return out;
   }
   function sameLineExclusiveCorridor(refs,radiusM=250){
-    const selected=(refs||[]).map(r=>String(r).toUpperCase());const selectedCorridor=sameLineCorridor(selected,radiusM);if(!selectedCorridor)return null;
-    const selectedSet=new Set(selected);let preserve=interchangeStationArea(radiusM,selected);
-    // NO used to buffer+union the complete rest of Vienna's rail network before clipping it.
-    // Only other-line corridors close enough to overlap the selected corridor can matter.
-    let search=selectedCorridor;try{search=turf.buffer(selectedCorridor,Number(radiusM)/1000,{units:'kilometers',steps:8});}catch(_){}
+    const selected=(refs||[]).map(r=>String(r).toUpperCase()),selectedSet=new Set(selected);const selectedCorridor=sameLineCorridor(selected,radiusM);if(!selectedCorridor)return null;
+    let preserve=interchangeStationArea(radiusM,selected),search=selectedCorridor;
+    try{search=turf.buffer(selectedCorridor,Number(radiusM)/1000,{units:'kilometers',steps:8});}catch(_){}
     for(const f of state.mapData?.railLines||[]){
       const routeRefs=(f.properties?.routeRefs||[]).map(r=>String(r).toUpperCase());if(!routeRefs.some(r=>!selectedSet.has(r)))continue;
-      try{if(!turf.booleanIntersects(f,search))continue;const b=turf.buffer(f,Number(radiusM)/1000,{units:'kilometers',steps:8});const local=safeIntersect(b,selectedCorridor);if(local)preserve=safeUnion(preserve,local);}catch(_){}
+      try{if(!turf.booleanIntersects(f,search))continue;const buffered=turf.buffer(f,Number(radiusM)/1000,{units:'kilometers',steps:8}),overlap=safeIntersect(buffered,selectedCorridor);if(overlap)preserve=safeUnion(preserve,overlap);}catch(_){}
     }
     return preserve?(safeDifference(selectedCorridor,preserve)||null):selectedCorridor;
   }
@@ -936,62 +887,62 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     for(const f of state.mapData?.stations||[])for(const r of f.properties?.lineRefs||[])if(/^[US]\d+/i.test(String(r)))refs.add(String(r).toUpperCase());
     return [...refs].sort((a,b)=>{const pa=a[0]===b[0]?0:(a[0]==='U'?-1:1);if(pa)return pa;return Number(a.slice(1))-Number(b.slice(1))||a.localeCompare(b);});
   }
+
+  async function referenceChunkRowsForTiles(baseKey,tiles){
+    initSupabaseIfNeeded();const keys=(tiles||[]).map(t=>chunkDatasetKey(baseKey,t.id));if(!keys.length)return [];
+    const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').in('dataset_key',keys).order('dataset_key');
+    if(error)throw error;return data||[];
+  }
+  function refreshTilesForGeometry(geometry,bufferM=0){
+    if(!geometry)return [];let search=geometry;
+    if(Number(bufferM)>0){try{search=turf.buffer(geometry,Number(bufferM)/1000,{units:'kilometers',steps:12});}catch(_){}}
+    let box;try{box=turf.bbox(search);}catch(_){return [];}const [west,south,east,north]=box;
+    return refreshGrid().filter(t=>t.east>=west&&t.west<=east&&t.north>=south&&t.south<=north);
+  }
   async function ensureBusLines(possible=state.possibleArea,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
-    const tiles=refreshTilesForGeometry(possible,bufferM);if(!tiles.length)throw new Error('Could not determine transit tiles for the remaining Endgame area.');
-    const rows=await referenceChunkRowsForTiles(REF_RAW_TRANSIT_LINES,tiles);const have=new Set(rows.map(r=>r.dataset_key));const missing=tiles.filter(t=>!have.has(chunkDatasetKey(REF_RAW_TRANSIT_LINES,t.id)));
-    if(missing.length)throw new Error(`Vienna bus data are missing ${missing.length} required transit tile${missing.length===1?'':'s'}. Open Developer → Refresh districts + transit; completed tiles are kept.`);
-    const buses=normalizeOfficialBusLines(mergeFeatureCollections(rows));if(!buses.length)throw new Error('The required transit tiles contain no usable Vienna bus geometry.');
+    const tiles=refreshTilesForGeometry(possible,bufferM);if(!tiles.length)throw new Error('Could not determine Vienna transit tiles for the Endgame area.');
+    const rows=await referenceChunkRowsForTiles(REF_RAW_TRANSIT_LINES,tiles),have=new Set(rows.map(r=>r.dataset_key));
+    const missing=tiles.filter(t=>!have.has(chunkDatasetKey(REF_RAW_TRANSIT_LINES,t.id)));
+    if(missing.length)throw new Error(`Vienna bus data are missing ${missing.length} required transit tile${missing.length===1?'':'s'}. Open Developer → Refresh districts + transit. Completed tiles are retained.`);
+    const buses=normalizeOfficialBusLines(mergeFeatureCollections(rows));if(!buses.length)throw new Error('The cached Vienna transit tiles contain no usable bus-line geometry. Refresh districts + transit once.');
     state.mapData.busLines=buses;return buses;
   }
   function matchingBusFeatures(refs,features=state.mapData?.busLines||[]){const wanted=new Set((refs||[]).map(r=>String(r).toUpperCase()));return (features||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r).toUpperCase())));}
-  function busFeaturesForArea(possible,refs,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
-    let search=possible;try{search=turf.buffer(possible,Number(bufferM)/1000,{units:'kilometers',steps:16});}catch(_){}
-    return matchingBusFeatures(refs).filter(f=>{try{return turf.booleanIntersects(f,search);}catch(_){return false;}});
-  }
-  function availableBusLineRefs(){
-    const refs=new Set();for(const f of state.mapData?.busLines||[])for(const r of f.properties?.routeRefs||[])if(r)refs.add(String(r).toUpperCase());
-    return [...refs].sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
-  }
   function busTentacleCandidates(possible,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
-    if(!possible)return [];let search=possible;try{search=turf.buffer(possible,Number(bufferM)/1000,{units:'kilometers',steps:24});}catch(_){}
+    if(!possible)return [];let search=possible;try{search=turf.buffer(possible,Number(bufferM)/1000,{units:'kilometers',steps:12});}catch(_){}
     const refs=new Set();for(const f of state.mapData?.busLines||[]){try{if(!turf.booleanIntersects(f,search))continue;}catch(_){continue;}for(const r of f.properties?.routeRefs||[])if(r)refs.add(String(r).toUpperCase());}
     return [...refs].sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
   }
-  function busFeatureGroups(refs,features=state.mapData?.busLines||[]){
-    const wanted=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))],groups=new Map(wanted.map(r=>[r,[]]));
-    for(const f of features||[])for(const r of f.properties?.routeRefs||[]){const key=String(r).toUpperCase();if(groups.has(key))groups.get(key).push(f);}
-    return groups;
+  function busFeaturesForArea(possible,refs,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
+    let search=possible;try{search=turf.buffer(possible,Number(bufferM)/1000,{units:'kilometers',steps:12});}catch(_){}
+    return matchingBusFeatures(refs).filter(f=>{try{return turf.booleanIntersects(f,search);}catch(_){return false;}}).map(f=>{try{return turf.simplify(f,{tolerance:.00002,highQuality:false,mutate:false});}catch(_){return f;}});
   }
+  function busFeatureGroups(refs,features=[]){const wanted=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))],groups=new Map(wanted.map(r=>[r,[]]));for(const f of features||[])for(const r of f.properties?.routeRefs||[]){const k=String(r).toUpperCase();if(groups.has(k))groups.get(k).push(f);}return groups;}
   function distanceToBusFeatures(point,features){let best=Infinity;for(const f of features||[]){try{best=Math.min(best,turf.pointToLineDistance(point,f,{units:'meters'}));}catch(_){}}return best;}
-  function nearestBusLineToPoint(point,refs,features=state.mapData?.busLines||[]){
+  function nearestBusLineToPoint(point,refs,features=[]){
     const groups=busFeatureGroups(refs,features);let best=null,bestD=Infinity;
-    for(const [ref,features] of groups){const d=distanceToBusFeatures(point,features);if(d<bestD){bestD=d;best=ref;}}
+    for(const [ref,fs] of groups){const d=distanceToBusFeatures(point,fs);if(d<bestD){bestD=d;best=ref;}}
     return best?{line_ref:best,distance_m:bestD}:null;
   }
-  function busLineNearestRegion(possible,selectedRef,refs,features=state.mapData?.busLines||[]){
-    if(!possible||!selectedRef)return null;const all=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))];const selected=String(selectedRef).toUpperCase();if(!all.includes(selected))return null;
+  function busLineNearestRegion(possible,selectedRef,refs,features=[]){
+    if(!possible||!selectedRef)return null;const all=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))],selected=String(selectedRef).toUpperCase();if(!all.includes(selected))return null;
     const groups=busFeatureGroups(all,features);if(!(groups.get(selected)||[]).length)return null;
-    let cells=[];try{cells=turf.squareGrid(turf.bbox(possible),BUS_TENTACLE_GRID_M/1000,{units:'kilometers'}).features;}catch(e){console.warn('Bus-line grid failed',e);return null;}
-    const kept=[];
+    let cells;try{cells=turf.squareGrid(turf.bbox(possible),BUS_TENTACLE_GRID_M/1000,{units:'kilometers'}).features;}catch(e){console.warn('Bus Voronoi grid failed',e);return null;}
+    let region=null;
     for(const cell of cells){
-      try{if(!turf.booleanIntersects(cell,possible))continue;}catch(_){continue;}
-      let sample;try{const clipped=safeIntersect(cell,possible);sample=turf.centroid(clipped||cell);}catch(_){sample=turf.centroid(cell);}
-      let winner=null,winnerD=Infinity;
-      for(const ref of all){const d=distanceToBusFeatures(sample,groups.get(ref));if(d<winnerD-0.01){winnerD=d;winner=ref;}}
-      if(winner===selected)kept.push(cell);
+      let clipped;try{clipped=safeIntersect(cell,possible);}catch(_){clipped=null;}if(!clipped)continue;
+      let probe;try{probe=turf.centroid(clipped);}catch(_){continue;}let winner=null,best=Infinity;
+      for(const ref of all){const d=distanceToBusFeatures(probe,groups.get(ref)||[]);if(d<best-.25){best=d;winner=ref;}else if(Math.abs(d-best)<=.25&&ref===selected){winner=ref;}}
+      if(winner===selected)region=safeUnion(region,clipped);
     }
-    if(!kept.length)return null;let region=null;try{region=turf.combine(turf.featureCollection(kept)).features[0]||null;}catch(_){for(const c of kept)region=safeUnion(region,c);}
-    return region?safeIntersect(possible,region):null;
+    return region?(safeIntersect(region,possible)||region):null;
   }
-  function showBusLinePreview(refs,selectedRef=null,features=state.mapData?.busLines||[]){
-    state.mapLayers.pendingBusLines?.remove();state.mapLayers.pendingBusLines=null;features=matchingBusFeatures(refs,features);if(!features.length||!state.gameMap)return;
-    const selected=selectedRef?String(selectedRef).toUpperCase():null;
-    state.mapLayers.pendingBusLines=L.geoJSON(turf.featureCollection(features),{style:f=>{const hit=selected&&(f.properties?.routeRefs||[]).some(r=>String(r).toUpperCase()===selected);return{color:hit?'#dc2626':'#f59e0b',weight:hit?7:4,opacity:hit?.95:.55,lineCap:'round',lineJoin:'round'};},interactive:false}).addTo(state.gameMap);
+  function showBusLinePreview(refs,selectedRef=null,features=[]){
+    const wanted=new Set((refs||[]).map(r=>String(r).toUpperCase())),selected=selectedRef?String(selectedRef).toUpperCase():null;
+    const fs=(features||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r).toUpperCase())));if(!fs.length)return;
+    state.mapLayers.pendingSameLine?.remove();state.mapLayers.pendingSameLine=L.geoJSON({type:'FeatureCollection',features:fs},{style:f=>{const chosen=selected&&(f.properties?.routeRefs||[]).some(r=>String(r).toUpperCase()===selected);return{color:chosen?'#dc2626':'#f59e0b',weight:chosen?7:4,opacity:chosen?.95:.62};},interactive:false}).addTo(state.gameMap);
   }
-  function showBusLineRegionPreview(possible,selectedRef,refs,features=state.mapData?.busLines||[]){
-    state.mapLayers.pendingBusRegion?.remove();state.mapLayers.pendingBusRegion=null;const g=busLineNearestRegion(possible,selectedRef,refs,features);if(!g||!state.gameMap)return;
-    state.mapLayers.pendingBusRegion=L.geoJSON(g,{style:{color:'#dc2626',weight:2,dashArray:'6 5',fillColor:'#ef4444',fillOpacity:.13},interactive:false}).addTo(state.gameMap).bindTooltip(`Closest to bus ${selectedRef}`);
-  }
+
   function districtSetGeometry(numbers){
     const wanted=new Set((numbers||[]).map(Number)),features=(state.mapData?.districts||[]).filter(d=>wanted.has(Number(d.number))).map(d=>d.feature);
     if(!features.length)return null;if(features.length===1)return features[0];
@@ -1021,6 +972,25 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(card.endgame_only&&!latestAction('endgame_zone'))return toast(`${card.title} is available in Endgame.`);
     if(state.previewQuestionSlot&&state.previewQuestionSlot!==card.slot)cancelQuestionPreview();
 
+    if(card.kind==='bus_line_tentacle'||card.engine_kind==='bus_line_tentacle'){
+      cancelQuestionPreview();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M);await ensureBusLines(state.possibleArea,bufferM);const refs=busTentacleCandidates(state.possibleArea,bufferM);
+      if(!refs.length)return toast(`No Vienna bus line crosses or comes within ${Math.round(bufferM)} m of the remaining Endgame area.`);
+      const busFeatures=busFeaturesForArea(state.possibleArea,refs,bufferM);if(!busFeatures.length)return toast('No usable bus geometry is available for this Endgame area. Refresh districts + transit once.');
+      showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures};
+      const ok=await confirmAction(`Ask ${card.title}?`,`${refs.length} Vienna bus line${refs.length===1?'':'s'} cross or come within ${Math.round(bufferM)} m of the remaining Endgame area.\n\nThe Hider confirms the line nearest to the actual hiding spot. The remaining map is cut to points closer to that line than to every other candidate line.`,`Ask Tentacle`);if(!ok){clearPendingOverlay();return;}
+      const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'bus_line_tentacle',p_payload:payload});if(error)throw error;clearPendingOverlay();await reloadGameState();return;
+    }
+
+    if(card.kind==='vor_navigation'||card.engine_kind==='vor_navigation'){
+      cancelQuestionPreview();const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
+      try{await publishSeekerLivePosition(origin);}catch(e){console.warn('Could not pre-publish VOR seeker position',e);}
+      const duration=Math.max(30,Math.min(300,Number(card.duration_seconds||VOR_NAV_DURATION_SECONDS))),payload={slot_key:card.slot,question_kind:'vor_navigation',title:card.title,duration_seconds:duration,origin};
+      const ok=await confirmAction(`Start ${card.title}?`,`For 3 minutes a black direction display appears below the map. A fading red 30° sector points toward the Hider and updates from your GPS.\n\nWith compass/orientation permission it follows the phone heading. Without compass access it stays north-up with a white N at the top. The Hider does not answer manually.`,`Start VOR`);if(!ok)return;
+      const {data:qId,error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'vor_navigation',p_payload:payload});if(error)throw error;
+      const {error:activateError}=await state.supabase.rpc('activate_vor_navigation_v1',{p_game_id:state.game.id,p_question_action_id:qId});if(activateError)throw activateError;
+      await reloadGameState();renderVorNavigation();return;
+    }
+
     if(card.kind==='tentacle'){
       if(state.previewQuestionSlot===card.slot&&state.previewQuestionCard?.pois&&state.previewQuestionCard?.origin){
         const pois=state.previewQuestionCard.pois,origin=state.previewQuestionCard.origin;
@@ -1037,23 +1007,6 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
       const pois=candidates.map(p=>({id:p.properties.poiId,name:p.properties.poiName,lat:p.geometry.coordinates[1],lng:p.geometry.coordinates[0]}));
       state.previewQuestionSlot=card.slot;state.previewQuestionCard={...card,pois,origin};showPoiPreview(pois);showTentacleRangePreview(origin);renderQuestionDeck();
       toast(`${pois.length} ${card.title.toLowerCase()} within 5 km. Tap the same Tentacle again to ask it.`,5000);return;
-    }
-
-    if(card.kind==='bus_line_tentacle'){
-      cancelQuestionPreview();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M);await ensureBusLines(state.possibleArea,bufferM);const refs=busTentacleCandidates(state.possibleArea,bufferM);
-      if(!refs.length)return toast(`No Vienna bus line crosses or comes within ${Math.round(bufferM)} m of the remaining Endgame area.`);
-      const busFeatures=busFeaturesForArea(state.possibleArea,refs,bufferM);showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures};
-      const ok=await confirmAction(`Ask ${card.title}?`,`${refs.length} Vienna bus line${refs.length===1?'':'s'} cross or come within ${Math.round(bufferM)} m of the remaining Endgame area.\n\nThe Hider answers which of those lines is nearest to the actual hiding spot. The map then keeps only the area closer to that bus line than to the other candidate lines.`,`Ask Tentacle`);if(!ok){clearPendingOverlay();return;}
-      const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'tentacle',p_payload:payload});if(error)throw error;clearPendingOverlay();await reloadGameState();return;
-    }
-
-    if(card.kind==='vor_navigation'){
-      cancelQuestionPreview();const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;await publishSeekerLivePosition(origin);
-      const duration=Math.max(30,Math.min(300,Number(card.duration_seconds||VOR_NAV_DURATION_SECONDS)));const payload={slot_key:card.slot,question_kind:'vor_navigation',title:card.title,duration_seconds:duration,origin};
-      const ok=await confirmAction(`Start ${card.title}?`,`For ${Math.round(duration/60)} minutes a black VOR display appears below the map. A fading red 30° sector points toward the Hider and updates with your GPS.\n\nIf phone compass/orientation is available, the sector is relative to the phone heading. Otherwise the display stays north-up with N at the top. The Hider does not answer this question.`,`Start VOR`);if(!ok)return;
-      const {data:qId,error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'directional',p_payload:payload});if(error)throw error;
-      const {error:activateError}=await state.supabase.rpc('activate_vor_navigation_v1',{p_game_id:state.game.id,p_question_action_id:qId});if(activateError)throw activateError;
-      await reloadGameState();renderVorNavigation();return;
     }
 
     if(card.kind==='photo'){
@@ -1153,7 +1106,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   }
   function clearPoiPreview(){state.mapLayers.poiPreview?.remove();state.mapLayers.poiReach?.remove();state.mapLayers.poiPreview=null;state.mapLayers.poiReach=null;}
   function clearPendingOverlay(){
-    ['pendingCircle','pendingLine','pendingDistrict','pendingBisector','pendingThermoPath','pendingDirection','pendingSameLine','pendingDistrictSet','pendingTentacleCell','pendingTentacleSearch','pendingTentacleVeto','pendingBusLines','pendingBusRegion'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
+    ['pendingCircle','pendingLine','pendingDistrict','pendingBisector','pendingThermoPath','pendingDirection','pendingSameLine','pendingDistrictSet','pendingTentacleCell','pendingTentacleSearch','pendingTentacleVeto'].forEach(k=>{state.mapLayers[k]?.remove();state.mapLayers[k]=null;});
   }
   function thermometerBisectorLine(from,to){
     const A=mercator(from.lat,from.lng),B=mercator(to.lat,to.lng);const dx=B.x-A.x,dy=B.y-A.y,len=Math.hypot(dx,dy);if(len<1)return null;
@@ -1213,8 +1166,8 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(p.question_kind==='thermometer'){const from=turf.point([p.from.lng,p.from.lat]),to=turf.point([p.to.lng,p.to.lat]);const df=turf.distance(target,from,{units:'meters'}),dt=turf.distance(target,to,{units:'meters'});const yes=dt<df;return {type:'boolean',value:yes,text:`${yes?'WARMER':'COLDER'} — ${Math.round(df)} m → ${Math.round(dt)} m from the private target.`};}
     if(p.question_kind==='bus_line_tentacle'){
       if(!state.secret?.endgame||!state.secret?.hidden)return {type:'bus_line_tentacle',status:'unavailable',text:'Nearest Bus Line requires the actual Endgame hiding spot.'};
-      const refs=p.candidate_line_refs||[],best=nearestBusLineToPoint(target,refs,p.bus_features||[]);if(!best)return {type:'bus_line_tentacle',status:'unavailable',text:'No candidate bus line geometry is available.'};
-      return {type:'bus_line_tentacle',status:'line',line_ref:best.line_ref,nearest_distance_m:best.distance_m,text:`Suggested answer: closest to bus line ${best.line_ref}.`};
+      const refs=p.candidate_line_refs||[],best=nearestBusLineToPoint(target,refs,p.bus_features||[]);if(!best)return {type:'bus_line_tentacle',status:'unavailable',text:'No candidate bus-line geometry is available.'};
+      return {type:'bus_line_tentacle',status:'line',line_ref:best.line_ref,nearest_distance_m:best.distance_m,text:`Closest line: ${best.line_ref}.`};
     }
     if(p.question_kind==='tentacle'){
       if(!state.secret?.endgame||!state.secret?.hidden)return {type:'tentacle',status:'unavailable',text:'Tentacles require the actual Endgame hiding spot.'};
@@ -1246,12 +1199,14 @@ Automatic private check: ${s.text}
 Only the POI name is sent publicly; the private validation distance is never included in the answer.${currentQuestionPenaltyMinutes(q)?`\n\nCurrent late penalty: −${currentQuestionPenaltyMinutes(q)} min`:''}`,`Send answer`);if(!ok)return;
     const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
+
   async function answerBusLineTentacle(q){
-    const s=suggestedAnswer(q);if(s?.status!=='line'||!s.line_ref)return toast('No valid bus-line answer is available. Refresh the Vienna transit reference if needed.');
-    const answer={type:'bus_line_tentacle',status:'line',line_ref:s.line_ref};const pen=currentQuestionPenaltyMinutes(q);
-    const ok=await confirmAction('Send bus-line Tentacle answer?',`${questionLabel(q)}\n\nPublic answer: closest to bus line ${s.line_ref}.\n\nThe private distance to the line is not published.${pen?`\n\nCurrent late penalty: −${pen} min`:''}`,`Send answer`);if(!ok)return;
+    const s=suggestedAnswer(q);if(s?.status!=='line'||!s.line_ref)return toast('No valid bus-line answer is available. Refresh districts + transit if necessary.');
+    const answer={type:'bus_line_tentacle',status:'line',line_ref:s.line_ref},pen=currentQuestionPenaltyMinutes(q);
+    const ok=await confirmAction('Send Nearest Bus Line answer?',`${questionLabel(q)}\n\nClosest line: ${s.line_ref}.\n\nOnly the line identity is published; the private distance is not.${pen?`\n\nCurrent late penalty: −${pen} min`:''}`,`Send answer`);if(!ok)return;
     const {error}=await state.supabase.rpc('answer_bus_line_tentacle_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
+
   async function autoVetoTentacle(q){
     const s=suggestedAnswer(q); if(s?.status!=='auto_veto')return toast('This Tentacle has a valid POI answer and should not be automatically vetoed.');
     const ok=await confirmAction('Confirm automatic Tentacle veto?',`${questionLabel(q)}
@@ -2075,8 +2030,6 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(q.payload?.question_kind==='radar'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Hit':'Miss'}</span>`;
     if(q.payload?.question_kind==='directional'&&a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${escapeHtml(a.value?(q.payload?.positive_label||'Yes'):(q.payload?.negative_label||'No'))}</span>`;
     if(a.type==='boolean')return `<span class="activity-resolution ${a.value?'yes':'no'}">${a.value?'Yes':'No'}</span>`;
-    if(a.type==='bus_line_tentacle'&&a.status==='line')return `<span class="activity-resolution yes">Closest to bus ${escapeHtml(a.line_ref||'?')}</span>`;
-    if(a.type==='vor_navigation')return `<span class="activity-resolution yes">3 min VOR signal</span>`;
     if(a.type==='tentacle'&&a.status==='poi')return `<span class="activity-resolution yes">Closest to ${escapeHtml(a.poi?.name||'POI')}</span>`;
     return '<span class="activity-resolution">Answered</span>';
   }
@@ -2099,10 +2052,56 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     hydratePhotoMedia().catch(e=>console.warn(e));
   }
 
+
+  function normalizeDegrees(v){v=Number(v)%360;return v<0?v+360:v;}
+  function vorHeadingFromEvent(e){
+    let h=null;if(Number.isFinite(Number(e?.webkitCompassHeading)))h=Number(e.webkitCompassHeading);else if(e?.absolute&&Number.isFinite(Number(e.alpha)))h=360-Number(e.alpha);
+    if(h===null)return null;const screenAngle=Number(screen.orientation?.angle??window.orientation??0)||0;return normalizeDegrees(h+screenAngle);
+  }
+  function attachVorOrientation(){
+    if(state.vorOrientationHandler)return;state.vorOrientationHandler=e=>{const h=vorHeadingFromEvent(e);if(h===null)return;state.vorHeading=h;state.vorCompassPermission='granted';requestAnimationFrame(()=>renderVorNavigation());};
+    window.addEventListener('deviceorientationabsolute',state.vorOrientationHandler,true);window.addEventListener('deviceorientation',state.vorOrientationHandler,true);
+  }
+  async function enableVorCompass(){
+    try{if(typeof DeviceOrientationEvent==='undefined'){state.vorCompassPermission='unsupported';renderVorNavigation();return;}if(typeof DeviceOrientationEvent.requestPermission==='function'){const r=await DeviceOrientationEvent.requestPermission();if(r!=='granted'){state.vorCompassPermission='denied';renderVorNavigation();return;}}attachVorOrientation();state.vorCompassPermission='granted';renderVorNavigation();}catch(e){console.warn('Compass permission failed',e);state.vorCompassPermission='denied';renderVorNavigation();}
+  }
+  function activeVorNavigation(){
+    const qs=effectiveActions('question').filter(q=>q.payload?.question_kind==='vor_navigation').sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
+    for(const q of qs){const a=activeAnswerForQuestion(q.id),answer=a?.payload?.answer;if(answer?.type!=='vor_navigation')continue;const expiry=new Date(answer.expires_at).getTime();if(Number.isFinite(expiry)&&expiry>serverNowMs())return{question:q,answer,expiry};}return null;
+  }
+  async function requestVorBearing(q,{force=false}={}){
+    if(!q||state.role!=='seeker'||state.vorBearingBusy)return;const now=Date.now();if(!force&&now-state.vorLastBearingFetch<1000)return;state.vorLastBearingFetch=now;state.vorBearingBusy=true;
+    try{const {data,error}=await state.supabase.rpc('get_vor_navigation_bearing_v1',{p_game_id:state.game.id,p_question_action_id:q.id});if(error)throw error;const row=Array.isArray(data)?data[0]:data;if(row&&Number.isFinite(Number(row.bearing_deg))){state.vorBearing=normalizeDegrees(Number(row.bearing_deg));state.vorExpiresAt=new Date(row.expires_at).getTime();}}catch(e){console.warn('VOR bearing refresh failed',e);}finally{state.vorBearingBusy=false;}
+  }
+  function startVorTracking(q){
+    if(state.role!=='seeker'||!q)return;
+    if(state.vorGeoWatchId===null&&navigator.geolocation){state.vorGeoWatchId=navigator.geolocation.watchPosition(pos=>{const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false});publishSeekerLivePosition(p).then(()=>requestVorBearing(q,{force:true})).catch(e=>console.warn('VOR live GPS publish failed',e));},e=>console.warn('VOR live GPS unavailable',e),{enableHighAccuracy:true,maximumAge:1000,timeout:10000});}
+    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
+    if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
+  }
+  function stopVorTracking(){
+    if(state.vorGeoWatchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(state.vorGeoWatchId);}catch(_){}}state.vorGeoWatchId=null;
+    if(state.vorOrientationHandler){window.removeEventListener('deviceorientationabsolute',state.vorOrientationHandler,true);window.removeEventListener('deviceorientation',state.vorOrientationHandler,true);}state.vorOrientationHandler=null;
+    if(state.vorRenderTimer)clearInterval(state.vorRenderTimer);state.vorRenderTimer=null;state.vorQuestionId=null;state.vorBearing=null;state.vorHeading=null;state.vorExpiresAt=0;state.vorLastBearingFetch=0;state.vorBearingBusy=false;
+  }
+  function renderVorNavigation(){
+    const panel=$('vorNavigationPanel');if(!panel)return;const active=state.role==='seeker'?activeVorNavigation():null;
+    if(!active){panel.classList.add('hidden');if(state.vorQuestionId)stopVorTracking();return;}
+    panel.classList.remove('hidden');state.vorQuestionId=active.question.id;state.vorExpiresAt=active.expiry;startVorTracking(active.question);requestVorBearing(active.question).catch(()=>{});
+    const timer=$('vorNavigationTimer');if(timer)timer.textContent=formatCountdown(Math.max(0,Math.ceil((active.expiry-serverNowMs())/1000)));
+    const sector=$('vorSector'),north=$('vorNorthRing'),status=$('vorNavigationStatus'),button=$('vorCompassButton'),heading=Number.isFinite(state.vorHeading)?state.vorHeading:null,bearing=Number.isFinite(state.vorBearing)?state.vorBearing:null;
+    if(button&&!button.dataset.bound){button.dataset.bound='1';button.addEventListener('click',()=>enableVorCompass());}
+    if(bearing!==null){sector?.style.setProperty('--vor-angle',`${normalizeDegrees(bearing-(heading??0))}deg`);sector?.classList.add('ready');}else sector?.classList.remove('ready');
+    north?.style.setProperty('--vor-north-angle',`${heading===null?0:normalizeDegrees(-heading)}deg`);
+    const needsPermission=typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission==='function'&&state.vorCompassPermission==='unknown';if(button)button.classList.toggle('hidden',!needsPermission);
+    if(status){if(bearing===null)status.textContent='Waiting for a GPS direction fix…';else if(heading!==null)status.textContent='Live compass mode · red 30° sector points toward the Hider.';else status.textContent='North-up mode · N is fixed at the top; red 30° sector points toward the Hider.';}
+  }
+
+
   function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderSeekerEndgame();renderGameClock();renderTurntablesPanel();renderTurntablesFreezeControls();renderVorNavigation();applyDeveloperPreviewReadOnly();}
 
   function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='same_line')return `Line: ${p.selected_line||(p.line_refs||[]).join(', ')}`;if(p.question_kind==='station_interchange')return 'Nearest Station an Interchange?';if(p.question_kind==='bus_line_tentacle')return 'Nearest Bus Line';if(p.question_kind==='vor_navigation')return 'VOR Navigation';if(p.question_kind==='district_set')return p.title||'District group';if(p.question_kind==='landmark_compare')return p.title||'Landmark comparison';if(p.question_kind==='street_shape')return 'Current Street Shape';if(p.question_kind==='directional')return p.title||'Direction';if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} POIs within 5 km`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
-  function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
+  function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='bus_line_tentacle'&&ans.status==='line')return `Closest to bus ${ans.line_ref||'?'}`;if(ans.type==='vor_navigation')return '3 min VOR signal';if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
   function actionLabel(a){const p=a.payload||{};if(a.kind==='question')return `Question · ${questionLabel(a)}`;if(a.kind==='answer'){const q=state.actions.find(x=>x.id===a.parent_id);return `Answer · ${q?questionLabel(q):'question'} · ${answerLabel(p.answer)}`;}if(a.kind==='thermo_reference')return `Thermometer start · ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`;if(a.kind==='curse_play'&&p.effect_key==='deceptive_tiny_house'&&p.revealed_at_endgame)return 'Curse revealed · Deceptive Tiny House';if(a.kind==='curse_play')return `Card played · ${p.title||p.card_key||'Curse'}`;if(a.kind==='question_veto')return `${p.automatic_tentacle?'Automatic Tentacle veto':'Veto'} · ${p.question_title||'Question'}`;if(a.kind==='time_trap_place')return `Time Trap placed · ${p.station_name||'Station'}`;if(a.kind==='time_trap_trigger')return `Time Trap triggered · ${p.station_name} · +${p.bonus_minutes} min`;if(a.kind==='game_finish')return `Hider Found · final ${formatCountdown(Number(p.final_seconds||0))}`;if(a.kind==='turntables_relocate')return 'Turntables · new hiding station selected';
     if(a.kind==='powerup_draw'&&p.effect_key==='same_day_delivery')return 'Same Day Delivery · drew 3 cards, keep 2';
     if(a.kind==='powerup_play'&&p.effect_key==='ma48')return `MA48 · Hider hand: ${(p.hand_snapshot||[]).join(', ')||'(empty)'}`;
@@ -2164,18 +2163,6 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     initSupabaseIfNeeded();
     const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').like('dataset_key',`${baseKey}__chunk_%`).order('dataset_key');
     if(error)throw error;return data||[];
-  }
-  async function referenceChunkRowsForTiles(baseKey,tiles){
-    initSupabaseIfNeeded();const keys=(tiles||[]).map(t=>chunkDatasetKey(baseKey,t.id));if(!keys.length)return [];
-    const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').in('dataset_key',keys).order('dataset_key');
-    if(error)throw error;return data||[];
-  }
-  function refreshTilesForGeometry(geometry,bufferM=0){
-    if(!geometry)return [];
-    let search=geometry;if(Number(bufferM)>0){try{search=turf.buffer(geometry,Number(bufferM)/1000,{units:'kilometers',steps:16});}catch(_){}}
-    let box;try{box=turf.bbox(search);}catch(_){return [];}
-    const [west,south,east,north]=box;
-    return refreshGrid().filter(t=>t.east>=west&&t.west<=east&&t.north>=south&&t.south<=north);
   }
   function rowFresh(row){
     const t=Date.parse(row?.checked_at||row?.updated_at||'');
@@ -2259,7 +2246,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     statusEl.textContent='Assembling cached transit chunks…';
     await new Promise(r=>setTimeout(r,0));
     const linesGeo=mergeFeatureCollections(lineRows),uGeo=mergeFeatureCollections(uRows),stopsGeo=mergeFeatureCollections(sRows);
-    statusEl.textContent='Building U-Bahn/S-Bahn network; bus geometry stays in transit tiles…';
+    statusEl.textContent='Building U-Bahn/S-Bahn network…';
     await new Promise(r=>setTimeout(r,0));
     const railLines=normalizeOfficialTransitLines(linesGeo);
     statusEl.textContent='Building station list from Vienna line attributes…';
@@ -2268,9 +2255,9 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(stations.length<20)throw new Error(`Chunked Vienna transport data produced only ${stations.length} U-/S-Bahn stations.`);
     statusEl.textContent=`Saving ${stations.length} stations…`;
     await saveReferenceDataset(REF_STATIONS_KEY,{stations},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
-    statusEl.textContent=`Saving ${railLines.length} U-/S-Bahn segments; bus lines remain in ${tiles.length} cached transit tiles…`;
-    await saveReferenceDataset(REF_TRANSIT_KEY,{railLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles · bus geometry stored per tile`);
-    return {complete:true,results,stations:stations.length,lines:railLines.length,bus_tiles:tiles.length};
+    statusEl.textContent=`Saving ${railLines.length} U-/S-Bahn line segments…`;
+    await saveReferenceDataset(REF_TRANSIT_KEY,{railLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
+    return {complete:true,results,stations:stations.length,lines:railLines.length};
   }
   function normalizeOfficialDistricts(geo){
     const features=(geo?.features||[]).filter(isPolygon);const districts=[];
@@ -2350,7 +2337,7 @@ ${failures.join('\n')}`,9000);
     try{
       const core=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
       if(core?.city&&validateDistricts(core.districts)&&core.stations?.length){await saveReferenceDataset(REF_ADMIN_KEY,{city:core.city,districts:core.districts},'Imported browser cache');await saveReferenceDataset(REF_STATIONS_KEY,{stations:core.stations},'Imported browser cache');count+=2;}
-      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails},'Imported browser cache · bus geometry remains tiled');count++;}
+      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails},'Imported browser cache');count++;}
       for(const type of ACTIVE_POI_TYPES){const obj=JSON.parse(localStorage.getItem(POI_CACHE_PREFIX+type)||'null');if(Array.isArray(obj?.pois)){await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',{pois:obj.pois},'Imported browser cache');count++;}}
       toast(`Imported ${count} cached dataset${count===1?'':'s'} to Supabase.`);await loadDeveloperDashboard();
     }catch(e){handleError(e);}
@@ -2448,7 +2435,7 @@ ${failures.join('\n')}`,9000);
     const {error}=await state.supabase.rpc('admin_delete_card_v1',{p_password:state.developerPassword,p_card_key:key});if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
   }
 
-  const QUESTION_KINDS=['district','same_line','station_interchange','street_shape','district_set','landmark_compare','directional','radar','thermometer','tentacle','photo'];
+  const QUESTION_KINDS=['district','same_line','station_interchange','street_shape','bus_line_tentacle','vor_navigation','district_set','landmark_compare','directional','radar','thermometer','tentacle','photo'];
   function questionParamFields(q={}){
     const p=q.params||{};switch(q.question_kind||'radar'){
       case 'radar':return `<label>Radius (m)<input class="dev-q-radius" type="number" min="10" step="10" value="${Number(p.radius_m??1000)}"></label>`;
@@ -2462,7 +2449,7 @@ ${failures.join('\n')}`,9000);
     }
   }
   function questionRulePreview(q={}){
-    const p=q.params||{},k=p.engine_kind||q.question_kind||q.kind;switch(k){
+    const p=q.params||{},k=q.question_kind||q.kind;switch(k){
       case 'radar':return `Internal comparison:\ndistance(target, seeker_origin) <= ${Number(p.radius_m??q.radius_m??0)} m\nMap cut: keep circle on YES; remove circle on NO.`;
       case 'thermometer':return `Internal comparison:\ndistance(target, B) < distance(target, A)\nA = armed start; B = current seeker point after >= ${Number(p.min_travel_m??q.min_travel_m??0)} m.\nMap cut: perpendicular bisector; keep B side for Warmer, A side for Colder.`;
       case 'district':return `Reference: ${REF_ADMIN_KEY}\nInternal: district(target) == district(seeker_origin).\nUses point-in-polygon against the 23 stored Vienna district polygons.`;
@@ -2472,8 +2459,6 @@ ${failures.join('\n')}`,9000);
       case 'same_line':return `References: ${REF_STATIONS_KEY} + ${REF_TRANSIT_KEY}\nInternal: selected U-/S-Bahn line is present in target station lineRefs.\nYES: keep 250 m selected-line corridor.\nNO: remove only the selected line's exclusive 250 m corridor; preserve overlaps/crossings with other lines and interchange station areas.`;
       case 'station_interchange':return `Reference: ${REF_STATIONS_KEY}\nInternal: hiding station has at least two distinct U-/S-Bahn lineRefs.\nMap cut: keep/remove 250 m buffers around interchange stations.`;
       case 'tentacle':{const type=p.poi_type||q.poi_type||'museum',filter=POI_QUERIES[type];const fs=(Array.isArray(filter)?filter:[filter]).filter(Boolean).map(x=>`nwr${x}(S,W,N,E);`).join('\n');return `Reference dataset: ${REF_POI_PREFIX}${type}_v1\nDeveloper refresh Overpass fallback:\n[out:json][timeout:20];\n(${fs})\nout center tags qt;\n\nEndgame rule: if target-seeker >250 m -> automatic veto + exclude 250 m seeker circle. Otherwise use candidate POIs within 5 km and keep the answered POI's Voronoi cell.`;}
-      case 'bus_line_tentacle':return `Reference: ${REF_TRANSIT_KEY} → busLines from Vienna OEFFLINIENOGD.\nCandidates: every bus line crossing the current Endgame possible area or within ${Number(p.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M)} m.\nAnswer: the line nearest the private hiding point.\nMap cut: keep the ~${BUS_TENTACLE_GRID_M} m generalized line-Voronoi cells closest to the answered bus line.`;
-      case 'vor_navigation':return `Endgame-only automatic signal. Server computes initial bearing from the published Seeker GPS to the private hiding point without exposing coordinates.\nDisplay: ${Number(p.duration_seconds||VOR_NAV_DURATION_SECONDS)} seconds, 30° red direction sector; phone compass when permitted, otherwise north-up fallback.\nReward: automatic 4-card draw, keep 2.`;
       case 'photo':return `No spatial comparison. The Hider sends the configured photo prompt through the private game-photo upload flow.`;
       case 'street_shape':return `Endgame engine rule: query nearest highway geometry around the private hiding point, preserve its real map orientation, remove labels/context, render a jittered black-on-white PNG, then send only the image.`;
       default:return 'Built-in rule.';
@@ -2510,7 +2495,6 @@ ${failures.join('\n')}`,9000);
     else if(kind==='directional')params={axis:row.querySelector('.dev-q-axis')?.value||'lat',positive_label:row.querySelector('.dev-q-positive')?.value.trim()||'Yes',negative_label:row.querySelector('.dev-q-negative')?.value.trim()||'No'};
     else if(kind==='tentacle')params={poi_type:row.querySelector('.dev-q-poi')?.value||'museum'};
     else if(kind==='photo')params={photo_prompt:row.querySelector('.dev-q-photo')?.value.trim()||row.querySelector('.dev-q-title').value.trim()};
-    const original=state.developerQuestions.find(x=>x.question_key===row.dataset.developerQuestion);if(original?.params?.engine_kind)params={...params,...original.params};
     return {question_key:row.dataset.newQuestion==='true'?'':row.dataset.developerQuestion,category:row.querySelector('.dev-q-category').value,title:row.querySelector('.dev-q-title').value.trim(),description:row.querySelector('.dev-q-description').value.trim(),question_kind:kind,params,endgame_only:row.querySelector('.dev-q-endgame').checked,enabled:row.querySelector('.dev-q-enabled').checked,sort_order:Number(row.querySelector('.dev-q-order').value||100)};
   }
   function rebuildQuestionParamArea(row){
@@ -2600,7 +2584,6 @@ ${failures.join('\n')}`,9000);
     document.querySelector('[data-action="open-hider"]').addEventListener('click',()=>openLobby('hider'));document.querySelector('[data-action="open-seeker"]').addEventListener('click',()=>openLobby('seeker'));document.querySelector('[data-action="home"]').addEventListener('click',()=>showView('homeView'));document.querySelector('[data-action="leave-game"]').addEventListener('click',leaveGame);
     document.querySelectorAll('[data-tab]').forEach(btn=>btn.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(x=>x.classList.toggle('active',x===btn));$('createTab').classList.toggle('active',btn.dataset.tab==='create');$('openTab').classList.toggle('active',btn.dataset.tab==='open');setTimeout(()=>state.createMap?.invalidateSize(),50);}));
     $('confirmCancel').addEventListener('click',()=>closeConfirm(false));$('confirmOk').addEventListener('click',()=>closeConfirm(true));$('confirmModal').addEventListener('click',e=>{if(e.target===$('confirmModal'))closeConfirm(false);});
-    $('vorCompassButton')?.addEventListener('click',()=>enableVorCompass().catch(handleError));
     $('createStationSelect').addEventListener('change',()=>{const f=state.mapData?.stations?.find(x=>x.properties.stationId===$('createStationSelect').value);if(f)selectCreateStation(f);});$('createGameButton').addEventListener('click',()=>createGame().catch(handleError));$('openHiderGameButton').addEventListener('click',()=>enterHider($('hiderGameSelect').value,$('openPassword').value).catch(handleError));$('refreshGamesButton').addEventListener('click',()=>loadGames().catch(handleError));
     document.querySelectorAll('[data-origin-mode]').forEach(b=>b.addEventListener('click',()=>{state.seekerOriginMode=b.dataset.originMode;document.querySelectorAll('[data-origin-mode]').forEach(x=>x.classList.toggle('active',x===b));$('questionOriginStatus').textContent=state.seekerOriginMode==='gps'?'Automatic GPS':'Manual marker';}));
     $('currentGpsButton').addEventListener('click',()=>useCurrentGps().catch(handleError));$('currentMapButton').addEventListener('click',beginManualCurrentPosition);$('currentClearButton').addEventListener('click',()=>{stopGpsAutoTracking();state.currentPosition=null;state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;$('currentPositionStatus').className='status-box';$('currentPositionStatus').textContent='No current position set.';renderQuestionDeck();});$('endgameCurrentButton').addEventListener('click',()=>{if(!state.currentPosition)return toast('Set your current position first.');setEndgameCandidate(state.currentPosition.lat,state.currentPosition.lng,state.currentPosition.accuracy_m,state.currentPosition.source);});$('prepareEndgameButton').addEventListener('click',()=>{state.endgamePrepareMode=true;renderHiderSecret();toast('Choose your hiding spot.');});$('endgameGpsButton').addEventListener('click',()=>getGps().then(p=>setEndgameCandidate(p.lat,p.lng,p.accuracy_m,'gps')).catch(handleError));$('endgamePickButton').addEventListener('click',()=>{state.endgamePickMode=true;toast('Tap the map to choose your hiding spot.');});$('toggleEndgameButton').addEventListener('click',()=>toggleEndgame().catch(handleError));$('seekerEndgameButton').addEventListener('click',()=>{state.seekerEndgamePickMode=true;cancelQuestionPreview();toast('Tap the station you believe is correct.');});$('hiderFoundButton').addEventListener('click',()=>finishGame().catch(handleError));$('startGameClockButton').addEventListener('click',()=>setGameClock('start').catch(handleError));$('pauseGameClockButton').addEventListener('click',()=>setGameClock('pause').catch(handleError));$('turntablesPickButton').addEventListener('click',()=>{if(!activeTurntablesAction())return;state.turntablesPickMode=true;state.turntablesCandidate=null;state.mapLayers.turntablesCandidate?.remove();state.mapLayers.turntablesCandidate=null;renderTurntablesPanel();toast('Tap a different station marker on the map.');});$('turntablesConfirmButton').addEventListener('click',()=>confirmTurntablesStation().catch(handleError));$('turntablesCancelButton').addEventListener('click',clearTurntablesCandidate);$('castCancel').addEventListener('click',()=>closeCastModal(null));$('castConfirm').addEventListener('click',()=>closeCastModal([...$('castOptions').querySelectorAll('input:checked')].map(x=>x.value)));$('photoModalClose').addEventListener('click',closePhotoModal);$('photoModal').addEventListener('click',e=>{if(e.target===$('photoModal'))closePhotoModal();});
