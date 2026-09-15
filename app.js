@@ -962,7 +962,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   async function interchangeStationAreaSlow(radiusM=250,onlyRefs=null){
     const parts=[],wanted=onlyRefs?new Set((onlyRefs||[]).map(r=>String(r).toUpperCase())):null,stations=state.mapData?.stations||[];
     for(let i=0;i<stations.length;i++){
-      const f=stations[i],refs=[...new Set((f.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()).filter(r=>/^[US]\\d+/i.test(r)))];
+      const f=stations[i],refs=[...new Set((f.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()).filter(r=>/^[US]\d+/i.test(r)))];
       if(refs.length<2||wanted&&!refs.some(r=>wanted.has(r)))continue;
       try{parts.push(turf.buffer(f,Number(radiusM)/1000,{units:'kilometers',steps:12}));}catch(_){}
       if(parts.length%3===0)await geometryIdleYield();
