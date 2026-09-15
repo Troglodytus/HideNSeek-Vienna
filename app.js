@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.11.1';
+  const APP_VERSION = '3.11.2';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -118,7 +118,7 @@
     gpsAutoTimer:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
-    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null,turntablesPickMode:false,turntablesCandidate:null
+    developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false
   };
 
   const $ = id => document.getElementById(id);
@@ -688,21 +688,39 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   }
 
   function secretFromRow(r){
-    const hidden=Number.isFinite(Number(r.hidden_lat))&&Number.isFinite(Number(r.hidden_lng))?turf.point([Number(r.hidden_lng),Number(r.hidden_lat)]):null;
+    const hidden=r.hidden_lat!=null&&r.hidden_lng!=null&&Number.isFinite(Number(r.hidden_lat))&&Number.isFinite(Number(r.hidden_lng))?turf.point([Number(r.hidden_lng),Number(r.hidden_lat)]):null;
     return {hidden,station:turf.point([Number(r.station_lng),Number(r.station_lat)]),station_name:r.station_name,endgame:!!r.endgame,base_radius_m:r.base_radius_m||BASE_HIDE_RADIUS_M};
   }
 
   async function enterHider(gameId,password){
     initSupabaseIfNeeded(); if(!gameId)return toast('Choose a game.');
     const {data,error}=await state.supabase.rpc('get_hider_game_v4',{p_game_id:gameId,p_password:password}); if(error)throw error; const r=data?.[0]; if(!r)return toast('Wrong hider password.');
-    state.role='hider'; state.hiderPassword=password; state.game={id:r.game_id,name:r.game_name,status:r.game_status}; state.secret=secretFromRow(r); await enterGameCommon();
+    state.developerPreview=false;state.developerPreviewRole=null;state.role='hider'; state.hiderPassword=password; state.game={id:r.game_id,name:r.game_name,status:r.game_status}; state.secret=secretFromRow(r); await enterGameCommon();
   }
-  async function enterSeeker(gameId){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status').eq('id',gameId).single(); if(error)throw error; state.role='seeker';state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon(); }
+  async function enterSeeker(gameId){ initSupabaseIfNeeded(); const {data,error}=await state.supabase.from('games').select('id,name,status').eq('id',gameId).single(); if(error)throw error; state.developerPreview=false;state.developerPreviewRole=null;state.role='seeker';state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon(); }
+
+  async function enterDeveloperGame(gameId,role){
+    initSupabaseIfNeeded();if(!state.developerPassword)throw new Error('Developer login required.');if(!['hider','seeker'].includes(role))throw new Error('Invalid preview role.');
+    const {data,error}=await state.supabase.from('games').select('*').eq('id',gameId).single();if(error)throw error;
+    state.developerPreview=true;state.developerPreviewRole=role;state.role=role;state.hiderPassword=null;state.secret=null;state.game=data;await enterGameCommon();
+  }
+  function clearDeveloperPreviewLock(){
+    document.querySelectorAll('#gameView [data-dev-preview-disabled="1"]').forEach(el=>{el.disabled=false;delete el.dataset.devPreviewDisabled;});
+  }
+  function applyDeveloperPreviewReadOnly(){
+    if(!state.developerPreview)return;
+    document.querySelectorAll('#gameView button,#gameView input,#gameView select,#gameView textarea').forEach(el=>{
+      if(el.matches('[data-action="leave-game"]'))return;
+      if(!el.disabled){el.dataset.devPreviewDisabled='1';el.disabled=true;}
+    });
+    $('syncBadge').textContent='READ ONLY';$('syncBadge').className='badge warn';
+  }
 
   async function enterGameCommon(){
     state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
     await Promise.all([ensureMapData(),loadQuestionCatalog()]); setupGameMap();
-    $('roleKicker').textContent=state.role.toUpperCase(); $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider');
+    clearDeveloperPreviewLock();
+    $('roleKicker').textContent=`${state.role.toUpperCase()}${state.developerPreview?' · DEV PREVIEW':''}`; $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker'); $('seekerQuestionLocation').classList.toggle('hidden',state.role!=='seeker'); $('seekerEndgamePanel').classList.toggle('hidden',state.role!=='seeker'); $('hiderControls').classList.toggle('hidden',state.role!=='hider'); $('hiderHandMainPanel').classList.toggle('hidden',state.role!=='hider');
     showView('gameView'); await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();
   }
 
@@ -1210,6 +1228,7 @@ ${refs.join(', ')}`,suggested||refs[0]);if(raw===null)return null;const line=Str
     if(card.effect_key==='kleingedrucktes'){await useKleingedrucktes(card);return;}
     if(card.effect_key==='same_day_delivery'){await useSameDayDelivery(card);return;}
     if(card.effect_key==='deceptive_tiny_house'){await useDeceptiveTinyHouse(card);return;}
+    if(card.effect_key==='passierschein_a38'){await usePassierscheinA38(card);return;}
     if(card.effect_key==='reshuffle_deck'){const ok=await confirmAction('Fresh Shuffle?','Reshuffle the discard pile into a new draw pile. Cards in your hand stay out.','Shuffle');if(!ok)return;const {error}=await state.supabase.rpc('use_reshuffle_card_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;await reloadGameState();return;}
     const prosperous=card.effect_key==='prosperous_home';if(prosperous)previewProsperousZone(1);
     let effectPayload={};
@@ -1231,6 +1250,19 @@ Mode: ${effectPayload.mode==='inside'?'Seekers must stay in districts 21/22':'Se
       const {error}=await state.supabase.rpc('play_card_v5',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_copy_card_key:null,p_cost_card_keys:costKeys||[],p_effect_payload:effectPayload});if(error)throw error;await reloadGameState();
     } finally {if(prosperous)clearProsperousPreview();clearCursePreview();}
   }
+
+  async function usePassierscheinA38(card){
+    const ok=await confirmAction('Play Curse of the Passierschein A38?',`${card.description||'For 10 minutes, previous deductions may be displayed incorrectly.'}
+
+Casting cost: roll an odd number on a die.
+
+Confirm only after the Hider has rolled an odd number.`, 'I rolled odd');
+    if(!ok)return;
+    const {error}=await state.supabase.rpc('use_passierschein_a38_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key});if(error)throw error;
+    await reloadGameState();toast('Passierschein A38 active for 10 minutes.',5000);
+  }
+  function activePassierscheinAction(){return activeCurseActions().find(a=>a.payload?.effect_key==='passierschein_a38')||null;}
+  function passierscheinFlippedQuestionIds(){const a=activePassierscheinAction();return new Set(Array.isArray(a?.payload?.flipped_question_ids)?a.payload.flipped_question_ids.map(String):[]);}
 
   async function playTurntables(card){
     if(activeTurntablesAction())return toast('Curse of the Turntables is already active.');
@@ -1425,7 +1457,18 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     state.hiderDraws=(d.data||[]).map(r=>({...r,cards:Array.isArray(r.cards)?r.cards:[],kept_card_keys:Array.isArray(r.kept_card_keys)?r.kept_card_keys:[],used_card_keys:Array.isArray(r.used_card_keys)?r.used_card_keys:[]}));state.timeTraps=t.data||[];state.privateCardUses=u.data||[];state.seekerLivePosition=(l.data||[])[0]||null;state.deckStatus=(ds.data||[])[0]||null;
   }
   async function reloadGamePublic(){const {data,error}=await state.supabase.from('games').select('*').eq('id',state.game.id).single();if(error)throw error;state.game={...state.game,...data};}
-  async function reloadGameState(){await reloadGamePublic();await reloadActions();if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();deriveLocalState();await recomputePossibleArea();renderAll();}
+  async function reloadDeveloperHiderPreview(){
+    const {data,error}=await state.supabase.rpc('admin_get_game_preview_v1',{p_password:state.developerPassword,p_game_id:state.game.id});if(error)throw error;const snap=data||{};
+    if(snap.secret)state.secret=secretFromRow(snap.secret);
+    state.hiderDraws=(snap.draws||[]).map(r=>({...r,cards:Array.isArray(r.cards)?r.cards:[],kept_card_keys:Array.isArray(r.kept_card_keys)?r.kept_card_keys:[],used_card_keys:Array.isArray(r.used_card_keys)?r.used_card_keys:[]}));
+    state.timeTraps=snap.time_traps||[];state.privateCardUses=snap.private_card_uses||[];state.seekerLivePosition=snap.seeker_live_position||null;state.deckStatus=snap.deck_status||null;
+  }
+  async function reloadGameState(){
+    await reloadGamePublic();await reloadActions();
+    if(state.developerPreview&&state.role==='hider')await reloadDeveloperHiderPreview();
+    else {if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();}
+    deriveLocalState();await recomputePossibleArea();renderAll();
+  }
 
   function deriveLocalState(){
     const questions=effectiveActions('question').sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));const q=questions[0];if(q?.payload?.origin)setSeekerPointDisplay(q.payload.origin);else setSeekerPointDisplay(null);
@@ -1468,6 +1511,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
       possible=safeIntersect(state.mapData.city,zone)||zone;
       phaseStartMs=Math.max(phaseStartMs,new Date(endgameZone.created_at).getTime());
     }
+    const a38Flipped=passierscheinFlippedQuestionIds();
     const qs=effectiveActions('question')
       .filter(q=>!phaseStartMs || new Date(q.created_at).getTime()>phaseStartMs)
       .sort((a,b)=>new Date(a.created_at)-new Date(b.created_at));
@@ -1482,32 +1526,32 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
         continue;
       }
       const a=activeAnswerForQuestion(q.id);if(!a)continue;
-      possible=applyConstraint(possible,q,a.payload?.answer);if(!possible)break;
+      possible=applyConstraint(possible,q,a.payload?.answer,a38Flipped.has(String(q.id)));if(!possible)break;
     }
     state.possibleArea=possible;
   }
 
-  function applyConstraint(possible,q,answer){
-    if(!possible)return null;const p=q.payload||{};
-    if(p.question_kind==='radar'){const c=turf.buffer(turf.point([p.center.lng,p.center.lat]),Number(p.radius_m)/1000,{units:'kilometers',steps:64});return answer?.value?safeIntersect(possible,c):safeDifference(possible,c);}
-    if(p.question_kind==='district'){const d=state.mapData.districts.find(x=>x.number===Number(p.district_number));return d?(answer?.value?safeIntersect(possible,d.feature):safeDifference(possible,d.feature)):possible;}
-    if(p.question_kind==='district_set'){const g=districtSetGeometry(p.districts||[]);return g?(answer?.value?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
-    if(p.question_kind==='landmark_compare'){const c=turf.buffer(turf.point([Number(p.landmark.lng),Number(p.landmark.lat)]),Number(p.radius_m)/1000,{units:'kilometers',steps:64});return answer?.value?safeIntersect(possible,c):safeDifference(possible,c);}
+  function applyConstraint(possible,q,answer,invert=false){
+    if(!possible)return null;const p=q.payload||{},boolValue=answer?.type==='boolean'?(invert?!answer.value:!!answer.value):null;
+    if(p.question_kind==='radar'){const c=turf.buffer(turf.point([p.center.lng,p.center.lat]),Number(p.radius_m)/1000,{units:'kilometers',steps:64});return boolValue?safeIntersect(possible,c):safeDifference(possible,c);}
+    if(p.question_kind==='district'){const d=state.mapData.districts.find(x=>x.number===Number(p.district_number));return d?(boolValue?safeIntersect(possible,d.feature):safeDifference(possible,d.feature)):possible;}
+    if(p.question_kind==='district_set'){const g=districtSetGeometry(p.districts||[]);return g?(boolValue?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
+    if(p.question_kind==='landmark_compare'){const c=turf.buffer(turf.point([Number(p.landmark.lng),Number(p.landmark.lat)]),Number(p.radius_m)/1000,{units:'kilometers',steps:64});return boolValue?safeIntersect(possible,c):safeDifference(possible,c);}
     if(p.question_kind==='same_line'){
       const corridor=sameLineCorridor(p.line_refs||[],250);if(!corridor)return possible;
-      if(answer?.value)return safeIntersect(possible,corridor);
+      if(boolValue)return safeIntersect(possible,corridor);
       // A NO removes only the selected line's exclusive 250 m corridor. Areas where another
       // U-/S-Bahn line overlaps/crosses it, plus interchange stations, stay possible.
       const exclusive=sameLineExclusiveCorridor(p.line_refs||[],250);return exclusive?safeDifference(possible,exclusive):possible;
     }
-    if(p.question_kind==='station_interchange'){const g=interchangeStationArea(Number(p.radius_m||250));return g?(answer?.value?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
-    if(p.question_kind==='directional'){const half=directionHalfPlane(p.origin,p.axis,!!answer?.value);return half?safeIntersect(possible,half):possible;}
+    if(p.question_kind==='station_interchange'){const g=interchangeStationArea(Number(p.radius_m||250));return g?(boolValue?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
+    if(p.question_kind==='directional'){const half=directionHalfPlane(p.origin,p.axis,!!boolValue);return half?safeIntersect(possible,half):possible;}
     if(p.question_kind==='thermometer'){
-      const half=warmerHalfPlane(possible,p.from,p.to,!!answer?.value);if(!half)return possible;
+      const half=warmerHalfPlane(possible,p.from,p.to,!!boolValue);if(!half)return possible;
       const cut=safeIntersect(possible,half);if(!cut){console.warn('Thermometer cut produced no geometry',p,answer);return null;}return cut;
     }
     if(p.question_kind==='tentacle'){
-      if(answer?.status==='poi'&&answer.poi)return nearestPoiCell(possible,answer.poi,p.pois||[]); return possible;
+      if(answer?.status==='poi'&&answer.poi){const cell=nearestPoiCell(possible,answer.poi,p.pois||[]);return invert?(cell?safeDifference(possible,cell):possible):cell;} return possible;
     }
     return possible;
   }
@@ -1684,7 +1728,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     $('pendingQuestions').querySelectorAll('[data-send-photo]').forEach(b=>b.addEventListener('click',()=>{const q=state.actions.find(a=>a.id===b.dataset.sendPhoto),file=state.photoFiles.get(b.dataset.sendPhoto);if(q)uploadPhotoAnswer(q,file).catch(handleError);}));
   }
 
-  function drawIsEarned(d){const q=state.actions.find(a=>a.id===d.question_action_id);return !!(q&&isActionEffective(q)&&(q.kind==='powerup_draw'||!!activeAnswerForQuestion(q.id)));}
+  function drawIsEarned(d){const q=state.actions.find(a=>a.id===d.question_action_id);const veto=q?activeVetoForQuestion(q.id):null;return !!(q&&isActionEffective(q)&&(q.kind==='powerup_draw'||!!activeAnswerForQuestion(q.id)||!!veto?.payload?.automatic_tentacle));}
   function renderCurseDraws(){
     if(state.role!=='hider')return;const earned=state.hiderDraws.filter(drawIsEarned);const hand=availableHandCards();const timeBonus=hand.filter(c=>c.card_kind==='time_bonus').reduce((sum,c)=>sum+Number(c.value_int||0),0)+state.privateCardUses.filter(u=>u.effect_key==='duplicate_bonus'&&u.is_active).reduce((sum,u)=>sum+Number(u.value_int||0),0)+state.timeTraps.filter(t=>t.trigger_active).reduce((sum,t)=>sum+Number(t.bonus_minutes||0),0);const deck=state.deckStatus;$('bonusTotal').textContent=`${timeBonus} min held/earned${deck?` · deck ${deck.remaining}/${deck.total} · cycle ${deck.cycle}`:''}`;
     const unresolved=earned.filter(d=>(d.kept_card_keys||[]).length<Number(d.keep_limit||1));
@@ -1711,7 +1755,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
 
   const SEEKER_CURSE_EFFECTS=new Set([
     'gamblers_feet','impenetrable_fog','express_route','rewind','dice_tax','spotty_memory','statue','photo_op','right_turn','passenger_princess','hide_seek_ception','wurst_stand','melange','strassenbahn_only','opernball','custom_rule',
-    'side_quest','deutsche_bahn','wean_ned_schlecht_redn','haute_vollee','one_ring','schwarzkappler','wiener_grantler','fiaker','mordor_curse','broken_lift','gemeindebau','quick_escalation','false_prophet','turntables','deceptive_tiny_house'
+    'side_quest','deutsche_bahn','passierschein_a38','wean_ned_schlecht_redn','haute_vollee','one_ring','schwarzkappler','wiener_grantler','fiaker','mordor_curse','broken_lift','gemeindebau','quick_escalation','false_prophet','turntables','deceptive_tiny_house'
   ]);
   const ONE_QUESTION_CURSES=new Set(['rewind','statue','photo_op','hide_seek_ception','wurst_stand','melange','opernball','custom_rule','one_ring','wiener_grantler','gemeindebau']);
   function curseIsCompleted(a){return effectiveActions('curse_complete').some(c=>c.parent_id===a.id);}
@@ -1726,6 +1770,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   function curseExtraText(a){
     const p=a.payload||{},e=p.effect_key;
     if(e==='deutsche_bahn')return p.blocked_line?`Blocked line: ${p.blocked_line}`:'';
+    if(e==='passierschein_a38')return 'Some previous deductions are temporarily displayed incorrectly.';
     if(e==='side_quest')return p.side_quest||'';
     if(e==='wean_ned_schlecht_redn')return p.mode==='work_hours'?'Work hours: stay put until the timer ends.':'Reach any marked Weinwanderweg access point, then check the curse off.';
     if(e==='haute_vollee')return 'Forbidden: districts 1, 18 and 19.';
@@ -1811,6 +1856,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     return '<span class="activity-resolution">Answered</span>';
   }
   function renderActivity(){
+    const a38Flipped=passierscheinFlippedQuestionIds();
     const entries=[
       ...state.actions.filter(a=>a.kind==='question').map(q=>({type:'question',at:q.created_at,q})),
       ...state.actions.filter(a=>!['question','answer','question_veto','thermo_reference','endgame_zone'].includes(a.kind)).map(a=>({type:'action',at:a.created_at,a}))
@@ -1819,7 +1865,8 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     $('activityHistory').innerHTML=entries.length?entries.map(entry=>{
       if(entry.type==='question'){
         const q=entry.q,r=rawResolutionForQuestion(q.id),pen=Number(r?.payload?.late_penalty_minutes||0),noReward=!!r?.payload?.reward_suppressed,qEffective=isActionEffective(q),rEffective=r?isActionEffective(r):false;
-        return `<div class="activity-item grouped ${qEffective?'':'inactive'}"><div class="activity-question-line"><strong>Question ${questionNumber.get(q.id)||'?'} – ${escapeHtml(activityQuestionName(q))}</strong>${!qEffective?' <span class="answer-pill undone">UNDONE</span>':''}${activityResolutionMarkup(q,r)}</div><div class="meta">${new Date(q.created_at).toLocaleString()}${r?` · resolved ${new Date(r.created_at).toLocaleTimeString()}${!rEffective?' · resolution undone':''}`:''}${noReward?' · <strong>no card reward</strong>':''}${pen?` · <strong>−${pen} min late penalty</strong>`:''}</div><div class="activity-actions compact">${canToggleAction(q)?`<button class="${q.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${q.id}" data-active="${q.is_active?'false':'true'}">${q.is_active?'Undo question':'Redo question'}</button>`:''}${r&&canToggleAction(r)?`<button class="${r.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${r.id}" data-active="${r.is_active?'false':'true'}">${r.is_active?'Undo answer':'Redo answer'}</button>`:''}</div></div>`;
+        const a38=a38Flipped.has(String(q.id));
+        return `<div class="activity-item grouped ${qEffective?'':'inactive'} ${a38?'a38-distorted':''}"><div class="activity-question-line"><strong>Question ${questionNumber.get(q.id)||'?'} – ${escapeHtml(activityQuestionName(q))}</strong>${!qEffective?' <span class="answer-pill undone">UNDONE</span>':''}${a38?' <span class="answer-pill a38">A38 distorted</span>':''}${activityResolutionMarkup(q,r)}</div><div class="meta">${new Date(q.created_at).toLocaleString()}${r?` · resolved ${new Date(r.created_at).toLocaleTimeString()}${!rEffective?' · resolution undone':''}`:''}${noReward?' · <strong>no card reward</strong>':''}${pen?` · <strong>−${pen} min late penalty</strong>`:''}</div><div class="activity-actions compact">${canToggleAction(q)?`<button class="${q.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${q.id}" data-active="${q.is_active?'false':'true'}">${q.is_active?'Undo question':'Redo question'}</button>`:''}${r&&canToggleAction(r)?`<button class="${r.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${r.id}" data-active="${r.is_active?'false':'true'}">${r.is_active?'Undo answer':'Redo answer'}</button>`:''}</div></div>`;
       }
       const a=entry.a;return `<div class="activity-item ${a.is_active?'':'inactive'}"><div><strong>${escapeHtml(actionLabel(a))}</strong>${!a.is_active?' <span class="answer-pill undone">UNDONE</span>':''}</div><div class="meta">${new Date(a.created_at).toLocaleString()} · ${escapeHtml(a.actor)}</div>${canToggleAction(a)?`<div class="activity-actions compact"><button class="${a.is_active?'danger':'secondary'} tiny activity-undo" data-toggle-action="${a.id}" data-active="${a.is_active?'false':'true'}">${a.is_active?'Undo':'Redo'}</button></div>`:''}</div>`;
     }).join(''):'<div class="mini-status">No game activity yet.</div>';
@@ -1827,7 +1874,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     hydratePhotoMedia().catch(e=>console.warn(e));
   }
 
-  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderSeekerEndgame();renderGameClock();renderTurntablesPanel();renderTurntablesFreezeControls();}
+  function renderAll(){renderQuestionDeck();renderPendingQuestions();renderCurseDraws();renderTimeTraps();renderActiveCurses();renderActivity();renderPossibleArea();renderHiderSecret();renderSeekerLiveForHider();renderSeekerEndgame();renderGameClock();renderTurntablesPanel();renderTurntablesFreezeControls();applyDeveloperPreviewReadOnly();}
 
   function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='same_line')return `Line: ${p.selected_line||(p.line_refs||[]).join(', ')}`;if(p.question_kind==='station_interchange')return 'Nearest Station an Interchange?';if(p.question_kind==='district_set')return p.title||'District group';if(p.question_kind==='landmark_compare')return p.title||'Landmark comparison';if(p.question_kind==='street_shape')return 'Current Street Shape';if(p.question_kind==='directional')return p.title||'Direction';if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} POIs within 5 km`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
   function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
@@ -1864,10 +1911,10 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
 
   async function syncServerClock(){try{const before=Date.now();const {data,error}=await state.supabase.rpc('server_now');const after=Date.now();if(error)throw error;state.serverOffsetMs=new Date(data).getTime()-(before+after)/2;$('serverClockStatus').textContent='Synced';}catch(_){state.serverOffsetMs=0;$('serverClockStatus').textContent='Local clock';}}
   function serverNowMs(){return Date.now()+state.serverOffsetMs;}
-  function startTimers(){clearInterval(state.timerId);state.timerId=setInterval(()=>{if(state.game){renderActiveCurses();renderTimeTraps();renderGameClock();renderAnswerDeadlines();renderTurntablesPanel();renderTurntablesFreezeControls();if(state.role==='hider')renderSeekerLiveForHider();if(state.role==='seeker')renderQuestionDeck();}},1000);}
+  function startTimers(){clearInterval(state.timerId);state.timerId=setInterval(()=>{if(state.game){const a38=!!activePassierscheinAction();if(state.passierscheinWasActive&&!a38){state.passierscheinWasActive=false;recomputePossibleArea().then(()=>{renderPossibleArea();renderActivity();}).catch(console.warn);}else if(a38)state.passierscheinWasActive=true;renderActiveCurses();renderTimeTraps();renderGameClock();renderAnswerDeadlines();renderTurntablesPanel();renderTurntablesFreezeControls();if(state.role==='hider')renderSeekerLiveForHider();if(state.role==='seeker')renderQuestionDeck();applyDeveloperPreviewReadOnly();}},1000);}
 
   function subscribeRealtime(){
-    if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';state.realtimeChannel=state.supabase.channel(`game-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).on('postgres_changes',{event:'UPDATE',schema:'public',table:'games',filter:`id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent='Live';$('syncBadge').className='badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
+    if(state.realtimeChannel)state.supabase.removeChannel(state.realtimeChannel);$('syncBadge').textContent=state.developerPreview?'READ ONLY':'Live';$('syncBadge').className=state.developerPreview?'badge warn':'badge ok';state.realtimeChannel=state.supabase.channel(`game-${state.game.id}`).on('postgres_changes',{event:'*',schema:'public',table:'game_actions',filter:`game_id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).on('postgres_changes',{event:'UPDATE',schema:'public',table:'games',filter:`id=eq.${state.game.id}`},()=>reloadGameState().catch(handleError)).subscribe(status=>{if(status==='SUBSCRIBED'){$('syncBadge').textContent=state.developerPreview?'READ ONLY':'Live';$('syncBadge').className=state.developerPreview?'badge warn':'badge ok';}else if(['CHANNEL_ERROR','TIMED_OUT'].includes(status)){$('syncBadge').textContent='Polling';$('syncBadge').className='badge warn';}});clearInterval(state.pollId);state.pollId=setInterval(()=>{if(state.game)reloadGameState().catch(()=>{});},15000);
   }
 
   async function hashPayload(obj){
@@ -2290,7 +2337,9 @@ ${failures.join('\n')}`,9000);
     $('developerReferenceList').querySelectorAll('[data-retry-poi]').forEach(b=>b.addEventListener('click',async()=>{try{const type=b.dataset.retryPoi,status=$('developerReferenceStatus');const r=await refreshPoiChunked(type,status,{});status.textContent=r.complete?`${humanize(type)} complete · ${r.count} POIs`:`${humanize(type)} partial · ${r.missing.length} tiles missing`;await loadDeveloperDashboard();}catch(e){handleError(e);}}));
   }
   function renderDeveloperGames(games){
-    $('developerGames').innerHTML=games.length?games.map(g=>`<div class="developer-game" data-admin-game="${g.id}"><input class="admin-game-name" value="${escapeHtml(g.name)}" maxlength="80"><select class="admin-game-status"><option value="active" ${g.status==='active'?'selected':''}>active</option><option value="finished" ${g.status==='finished'?'selected':''}>finished</option></select><div class="meta">${escapeHtml(g.station_name||'No station')} · ${new Date(g.created_at).toLocaleString()}</div><div class="developer-game-actions"><button class="secondary" data-admin-save="${g.id}">Save</button><button class="danger" data-admin-delete="${g.id}">Delete</button></div></div>`).join(''):'<div class="status-box">No games.</div>';
+    $('developerGames').innerHTML=games.length?games.map(g=>`<div class="developer-game" data-admin-game="${g.id}"><input class="admin-game-name" value="${escapeHtml(g.name)}" maxlength="80"><select class="admin-game-status"><option value="active" ${g.status==='active'?'selected':''}>active</option><option value="finished" ${g.status==='finished'?'selected':''}>finished</option></select><div class="meta">${escapeHtml(g.station_name||'No station')} · ${new Date(g.created_at).toLocaleString()}</div><div class="developer-game-actions"><button class="secondary" data-admin-preview-hider="${g.id}">View as Hider</button><button class="secondary" data-admin-preview-seeker="${g.id}">View as Seeker</button><button class="secondary" data-admin-save="${g.id}">Save</button><button class="danger" data-admin-delete="${g.id}">Delete</button></div></div>`).join(''):'<div class="status-box">No games.</div>';
+    $('developerGames').querySelectorAll('[data-admin-preview-hider]').forEach(b=>b.addEventListener('click',()=>enterDeveloperGame(b.dataset.adminPreviewHider,'hider').catch(handleError)));
+    $('developerGames').querySelectorAll('[data-admin-preview-seeker]').forEach(b=>b.addEventListener('click',()=>enterDeveloperGame(b.dataset.adminPreviewSeeker,'seeker').catch(handleError)));
     $('developerGames').querySelectorAll('[data-admin-save]').forEach(b=>b.addEventListener('click',()=>adminSaveGame(b.dataset.adminSave).catch(handleError)));
     $('developerGames').querySelectorAll('[data-admin-delete]').forEach(b=>b.addEventListener('click',()=>adminDeleteGame(b.dataset.adminDelete).catch(handleError)));
   }
@@ -2298,7 +2347,12 @@ ${failures.join('\n')}`,9000);
   async function adminDeleteGame(id){const row=document.querySelector(`[data-admin-game="${CSS.escape(id)}"]`);const name=row.querySelector('.admin-game-name').value;const ok=await confirmAction('Delete this game permanently?',`${name}\n\nThis deletes its questions, cards, secrets and history. This cannot be undone.`,'Delete game',true);if(!ok)return;const {error}=await state.supabase.rpc('admin_delete_game_v1',{p_password:state.developerPassword,p_game_id:id});if(error)throw error;await loadDeveloperDashboard();}
   function openDeveloper(){state.developerPassword=null;state.developerCards=[];state.developerQuestions=[];$('developerPassword').value='';$('developerLoginPanel').classList.remove('hidden');$('developerPanel').classList.add('hidden');showView('developerView');}
 
-  function leaveGame(){if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();state.mapLayers.curseEffects?.remove();state.mapLayers.cursePreview?.remove();state.mapLayers.curseEffects=null;state.mapLayers.cursePreview=null;state.curseMapSignature=null;Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null,turntablesPickMode:false,turntablesCandidate:null});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();showView('homeView');}
+  function leaveGame(){
+    const returnToDeveloper=!!state.developerPreview;
+    if(state.realtimeChannel&&state.supabase)state.supabase.removeChannel(state.realtimeChannel);clearInterval(state.timerId);clearInterval(state.pollId);stopGpsAutoTracking();clearPrivateMapLayers();state.mapLayers.curseEffects?.remove();state.mapLayers.cursePreview?.remove();state.mapLayers.curseEffects=null;state.mapLayers.cursePreview=null;state.curseMapSignature=null;clearDeveloperPreviewLock();Object.assign(state,{role:null,game:null,hiderPassword:null,secret:null,actions:[],hiderDraws:[],timeTraps:[],privateCardUses:[],thermoReference:null,pendingQuestionCard:null,pickMode:null,trapPlacementCard:null,endgameCandidate:null,endgameAccuracyM:null,endgamePickMode:false,endgamePrepareMode:false,seekerEndgamePickMode:false,currentPosition:null,seekerLivePosition:null,deckStatus:null,thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),seenCurseIds:new Set(),curseSoundPrimed:false,sameLineSelection:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false});state.currentPositionMarker?.remove();state.currentPositionAccuracyCircle?.remove();state.currentPositionMarker=null;state.currentPositionAccuracyCircle=null;clearPoiPreview();clearPendingOverlay();
+    if(returnToDeveloper&&state.developerPassword){showView('developerView');$('developerLoginPanel').classList.add('hidden');$('developerPanel').classList.remove('hidden');showDeveloperTab('games');loadDeveloperDashboard().catch(handleError);}else showView('homeView');
+  }
+
   function openLobby(role){$('hiderLobby').classList.toggle('hidden',role!=='hider');$('seekerLobby').classList.toggle('hidden',role!=='seeker');$('lobbyKicker').textContent=role.toUpperCase();$('lobbyTitle').textContent=role==='hider'?'Create or open a game':'Choose a game';showView('lobbyView');(async()=>{try{if(role==='hider')await setupCreateMap();await loadGames();}catch(e){handleError(e);}})();}
 
   function bindUi(){

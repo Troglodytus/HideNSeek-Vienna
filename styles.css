@@ -416,3 +416,9 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 .turntables-panel{border-color:#fca5a5;background:linear-gradient(180deg,#fff 0%,#fff7f7 100%);}
 .turntables-panel-timer{font-variant-numeric:tabular-nums;font-size:20px;font-weight:900;color:#b91c1c;}
 .turntables-candidate{display:grid!important;place-items:center;background:#dc2626;color:white;border:3px solid white;border-radius:50%;box-shadow:0 0 0 3px #dc2626;font-size:16px;font-weight:900;}
+
+/* v3.11.2 */
+.hider-hand-main{border-color:rgba(22,163,74,.35)}
+.answer-pill.a38{background:#7c3aed;color:#fff;border-color:#7c3aed}
+.activity-item.a38-distorted{box-shadow:inset 3px 0 0 #7c3aed}
+.developer-game-actions{flex-wrap:wrap}

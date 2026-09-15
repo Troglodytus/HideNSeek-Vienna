@@ -7,7 +7,7 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css?v=3.11.1" />
+  <link rel="stylesheet" href="./styles.css?v=3.11.2" />
 </head>
 <body>
   <main id="app">
@@ -72,7 +72,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.11.1</div><h2>Developer</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.11.2</div><h2>Developer</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -192,6 +192,11 @@
             <button id="seekerEndgameButton" class="secondary full">Start Endgame</button>
           </section>
 
+          <section id="hiderHandMainPanel" class="panel hider-hand-main hidden">
+            <div class="row-between"><div><div class="eyebrow">HIDER HAND</div><h3>Hand &amp; draws</h3></div><span id="bonusTotal" class="mini-status"></span></div>
+            <div id="curseDraws" class="curse-draw-list"></div>
+          </section>
+
           <section id="pendingQuestionsPanel" class="panel pending-questions-panel">
             <div class="row-between"><div><div class="eyebrow">ONGOING</div><h3>Current questions</h3></div><span id="pendingQuestionCount" class="mini-status"></span></div>
             <div id="pendingQuestions" class="question-list"></div>
@@ -230,10 +235,6 @@
               <div class="row-between"><div><div class="eyebrow">ULTIMATE CARD</div><h3>Turntables relocation</h3></div><span id="turntablesPanelTimer" class="turntables-panel-timer">20:00</span></div>
               <div id="turntablesStatus" class="status-box">Choose a different hiding station before time runs out.</div>
               <div class="location-row three"><button id="turntablesPickButton" class="danger">Choose new station</button><button id="turntablesConfirmButton" class="primary hidden">Confirm station</button><button id="turntablesCancelButton" class="secondary hidden">Cancel</button></div>
-            </div>
-            <div class="panel compact">
-              <div class="row-between"><h3>Hider hand &amp; draws</h3><span id="bonusTotal" class="mini-status"></span></div>
-              <div id="curseDraws" class="curse-draw-list"></div>
             </div>
             <div class="panel compact">
               <h3>Time traps</h3>
@@ -289,6 +290,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.11.1"></script>
+  <script src="./app.js?v=3.11.2"></script>
 </body>
 </html>
