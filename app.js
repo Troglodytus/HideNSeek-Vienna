@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.12.0';
+  const APP_VERSION = '3.12.1';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -114,7 +114,7 @@
     thermoReference:null, pendingQuestionCard:null, pickMode:null, trapPlacementCard:null,
     possibleArea:null, baseAllowedArea:null, baseRadiusBuilt:null,
     poiCache:{}, tentaclePreview:null, pendingOverlay:null,
-    realtimeChannel:null, timerId:null, pollId:null, serverOffsetMs:0,
+    realtimeChannel:null, timerId:null, pollId:null, serverOffsetMs:0,reloadPromise:null,reloadQueued:false,
     overpassBadUntil:{}, railLoadPromise:null,
     confirmResolver:null,
     currentPosition:null,currentPositionMarker:null,currentPositionAccuracyCircle:null,
@@ -420,10 +420,9 @@
       fetchViennaWfs(VIENNA_TRANSIT_STOPS_LAYER,'Vienna public-transport stops')
     ]);
     const railLines=normalizeOfficialTransitLines(lineGeo);
-    const busLines=normalizeOfficialBusLines(lineGeo);
     const stations=normalizeOfficialStations(ubahnStops,allStops,railLines,city);
     if(stations.length<20)throw new Error(`Vienna official transport data produced only ${stations.length} U-/S-Bahn stations.`);
-    return {stations,railLines,busLines};
+    return {stations,railLines};
   }
   function featureToPoi(feature,type,i){
     const pt=pointFromFeature(feature);if(!pt)return null;
@@ -921,9 +920,14 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   }
   function sameLineExclusiveCorridor(refs,radiusM=250){
     const selected=(refs||[]).map(r=>String(r).toUpperCase());const selectedCorridor=sameLineCorridor(selected,radiusM);if(!selectedCorridor)return null;
-    const selectedSet=new Set(selected),otherRefs=availableRailLineRefs().filter(r=>!selectedSet.has(String(r).toUpperCase()));
-    const otherCorridor=sameLineCorridor(otherRefs,radiusM);const interchanges=interchangeStationArea(radiusM,selected);
-    let preserve=otherCorridor;if(interchanges)preserve=safeUnion(preserve,interchanges);
+    const selectedSet=new Set(selected);let preserve=interchangeStationArea(radiusM,selected);
+    // NO used to buffer+union the complete rest of Vienna's rail network before clipping it.
+    // Only other-line corridors close enough to overlap the selected corridor can matter.
+    let search=selectedCorridor;try{search=turf.buffer(selectedCorridor,Number(radiusM)/1000,{units:'kilometers',steps:8});}catch(_){}
+    for(const f of state.mapData?.railLines||[]){
+      const routeRefs=(f.properties?.routeRefs||[]).map(r=>String(r).toUpperCase());if(!routeRefs.some(r=>!selectedSet.has(r)))continue;
+      try{if(!turf.booleanIntersects(f,search))continue;const b=turf.buffer(f,Number(radiusM)/1000,{units:'kilometers',steps:8});const local=safeIntersect(b,selectedCorridor);if(local)preserve=safeUnion(preserve,local);}catch(_){}
+    }
     return preserve?(safeDifference(selectedCorridor,preserve)||null):selectedCorridor;
   }
   function availableRailLineRefs(){
@@ -932,13 +936,18 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     for(const f of state.mapData?.stations||[])for(const r of f.properties?.lineRefs||[])if(/^[US]\d+/i.test(String(r)))refs.add(String(r).toUpperCase());
     return [...refs].sort((a,b)=>{const pa=a[0]===b[0]?0:(a[0]==='U'?-1:1);if(pa)return pa;return Number(a.slice(1))-Number(b.slice(1))||a.localeCompare(b);});
   }
-  async function ensureBusLines(){
-    if(Array.isArray(state.mapData?.busLines)&&state.mapData.busLines.length)return state.mapData.busLines;
-    const ref=await referenceDataset(REF_TRANSIT_KEY);
-    if(Array.isArray(ref?.busLines)&&ref.busLines.length){state.mapData.busLines=ref.busLines;return ref.busLines;}
-    throw new Error('Vienna bus-line reference data are not seeded yet. Open Developer → Refresh districts + transit once so every player uses the same bus geometry.');
+  async function ensureBusLines(possible=state.possibleArea,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
+    const tiles=refreshTilesForGeometry(possible,bufferM);if(!tiles.length)throw new Error('Could not determine transit tiles for the remaining Endgame area.');
+    const rows=await referenceChunkRowsForTiles(REF_RAW_TRANSIT_LINES,tiles);const have=new Set(rows.map(r=>r.dataset_key));const missing=tiles.filter(t=>!have.has(chunkDatasetKey(REF_RAW_TRANSIT_LINES,t.id)));
+    if(missing.length)throw new Error(`Vienna bus data are missing ${missing.length} required transit tile${missing.length===1?'':'s'}. Open Developer → Refresh districts + transit; completed tiles are kept.`);
+    const buses=normalizeOfficialBusLines(mergeFeatureCollections(rows));if(!buses.length)throw new Error('The required transit tiles contain no usable Vienna bus geometry.');
+    state.mapData.busLines=buses;return buses;
   }
-  function matchingBusFeatures(refs){const wanted=new Set((refs||[]).map(r=>String(r).toUpperCase()));return (state.mapData?.busLines||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r).toUpperCase())));}
+  function matchingBusFeatures(refs,features=state.mapData?.busLines||[]){const wanted=new Set((refs||[]).map(r=>String(r).toUpperCase()));return (features||[]).filter(f=>(f.properties?.routeRefs||[]).some(r=>wanted.has(String(r).toUpperCase())));}
+  function busFeaturesForArea(possible,refs,bufferM=BUS_TENTACLE_SEARCH_BUFFER_M){
+    let search=possible;try{search=turf.buffer(possible,Number(bufferM)/1000,{units:'kilometers',steps:16});}catch(_){}
+    return matchingBusFeatures(refs).filter(f=>{try{return turf.booleanIntersects(f,search);}catch(_){return false;}});
+  }
   function availableBusLineRefs(){
     const refs=new Set();for(const f of state.mapData?.busLines||[])for(const r of f.properties?.routeRefs||[])if(r)refs.add(String(r).toUpperCase());
     return [...refs].sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
@@ -948,20 +957,20 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     const refs=new Set();for(const f of state.mapData?.busLines||[]){try{if(!turf.booleanIntersects(f,search))continue;}catch(_){continue;}for(const r of f.properties?.routeRefs||[])if(r)refs.add(String(r).toUpperCase());}
     return [...refs].sort((a,b)=>a.localeCompare(b,'de',{numeric:true,sensitivity:'base'}));
   }
-  function busFeatureGroups(refs){
+  function busFeatureGroups(refs,features=state.mapData?.busLines||[]){
     const wanted=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))],groups=new Map(wanted.map(r=>[r,[]]));
-    for(const f of state.mapData?.busLines||[])for(const r of f.properties?.routeRefs||[]){const key=String(r).toUpperCase();if(groups.has(key))groups.get(key).push(f);}
+    for(const f of features||[])for(const r of f.properties?.routeRefs||[]){const key=String(r).toUpperCase();if(groups.has(key))groups.get(key).push(f);}
     return groups;
   }
   function distanceToBusFeatures(point,features){let best=Infinity;for(const f of features||[]){try{best=Math.min(best,turf.pointToLineDistance(point,f,{units:'meters'}));}catch(_){}}return best;}
-  function nearestBusLineToPoint(point,refs){
-    const groups=busFeatureGroups(refs);let best=null,bestD=Infinity;
+  function nearestBusLineToPoint(point,refs,features=state.mapData?.busLines||[]){
+    const groups=busFeatureGroups(refs,features);let best=null,bestD=Infinity;
     for(const [ref,features] of groups){const d=distanceToBusFeatures(point,features);if(d<bestD){bestD=d;best=ref;}}
     return best?{line_ref:best,distance_m:bestD}:null;
   }
-  function busLineNearestRegion(possible,selectedRef,refs){
+  function busLineNearestRegion(possible,selectedRef,refs,features=state.mapData?.busLines||[]){
     if(!possible||!selectedRef)return null;const all=[...new Set((refs||[]).map(r=>String(r).toUpperCase()))];const selected=String(selectedRef).toUpperCase();if(!all.includes(selected))return null;
-    const groups=busFeatureGroups(all);if(!(groups.get(selected)||[]).length)return null;
+    const groups=busFeatureGroups(all,features);if(!(groups.get(selected)||[]).length)return null;
     let cells=[];try{cells=turf.squareGrid(turf.bbox(possible),BUS_TENTACLE_GRID_M/1000,{units:'kilometers'}).features;}catch(e){console.warn('Bus-line grid failed',e);return null;}
     const kept=[];
     for(const cell of cells){
@@ -974,13 +983,13 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(!kept.length)return null;let region=null;try{region=turf.combine(turf.featureCollection(kept)).features[0]||null;}catch(_){for(const c of kept)region=safeUnion(region,c);}
     return region?safeIntersect(possible,region):null;
   }
-  function showBusLinePreview(refs,selectedRef=null){
-    state.mapLayers.pendingBusLines?.remove();state.mapLayers.pendingBusLines=null;const features=matchingBusFeatures(refs);if(!features.length||!state.gameMap)return;
+  function showBusLinePreview(refs,selectedRef=null,features=state.mapData?.busLines||[]){
+    state.mapLayers.pendingBusLines?.remove();state.mapLayers.pendingBusLines=null;features=matchingBusFeatures(refs,features);if(!features.length||!state.gameMap)return;
     const selected=selectedRef?String(selectedRef).toUpperCase():null;
     state.mapLayers.pendingBusLines=L.geoJSON(turf.featureCollection(features),{style:f=>{const hit=selected&&(f.properties?.routeRefs||[]).some(r=>String(r).toUpperCase()===selected);return{color:hit?'#dc2626':'#f59e0b',weight:hit?7:4,opacity:hit?.95:.55,lineCap:'round',lineJoin:'round'};},interactive:false}).addTo(state.gameMap);
   }
-  function showBusLineRegionPreview(possible,selectedRef,refs){
-    state.mapLayers.pendingBusRegion?.remove();state.mapLayers.pendingBusRegion=null;const g=busLineNearestRegion(possible,selectedRef,refs);if(!g||!state.gameMap)return;
+  function showBusLineRegionPreview(possible,selectedRef,refs,features=state.mapData?.busLines||[]){
+    state.mapLayers.pendingBusRegion?.remove();state.mapLayers.pendingBusRegion=null;const g=busLineNearestRegion(possible,selectedRef,refs,features);if(!g||!state.gameMap)return;
     state.mapLayers.pendingBusRegion=L.geoJSON(g,{style:{color:'#dc2626',weight:2,dashArray:'6 5',fillColor:'#ef4444',fillOpacity:.13},interactive:false}).addTo(state.gameMap).bindTooltip(`Closest to bus ${selectedRef}`);
   }
   function districtSetGeometry(numbers){
@@ -1031,9 +1040,9 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     }
 
     if(card.kind==='bus_line_tentacle'){
-      cancelQuestionPreview();await ensureBusLines();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M),refs=busTentacleCandidates(state.possibleArea,bufferM);
+      cancelQuestionPreview();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M);await ensureBusLines(state.possibleArea,bufferM);const refs=busTentacleCandidates(state.possibleArea,bufferM);
       if(!refs.length)return toast(`No Vienna bus line crosses or comes within ${Math.round(bufferM)} m of the remaining Endgame area.`);
-      showBusLinePreview(refs);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs};
+      const busFeatures=busFeaturesForArea(state.possibleArea,refs,bufferM);showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures};
       const ok=await confirmAction(`Ask ${card.title}?`,`${refs.length} Vienna bus line${refs.length===1?'':'s'} cross or come within ${Math.round(bufferM)} m of the remaining Endgame area.\n\nThe Hider answers which of those lines is nearest to the actual hiding spot. The map then keeps only the area closer to that bus line than to the other candidate lines.`,`Ask Tentacle`);if(!ok){clearPendingOverlay();return;}
       const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'tentacle',p_payload:payload});if(error)throw error;clearPendingOverlay();await reloadGameState();return;
     }
@@ -1204,7 +1213,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(p.question_kind==='thermometer'){const from=turf.point([p.from.lng,p.from.lat]),to=turf.point([p.to.lng,p.to.lat]);const df=turf.distance(target,from,{units:'meters'}),dt=turf.distance(target,to,{units:'meters'});const yes=dt<df;return {type:'boolean',value:yes,text:`${yes?'WARMER':'COLDER'} — ${Math.round(df)} m → ${Math.round(dt)} m from the private target.`};}
     if(p.question_kind==='bus_line_tentacle'){
       if(!state.secret?.endgame||!state.secret?.hidden)return {type:'bus_line_tentacle',status:'unavailable',text:'Nearest Bus Line requires the actual Endgame hiding spot.'};
-      const refs=p.candidate_line_refs||[],best=nearestBusLineToPoint(target,refs);if(!best)return {type:'bus_line_tentacle',status:'unavailable',text:'No candidate bus line geometry is available.'};
+      const refs=p.candidate_line_refs||[],best=nearestBusLineToPoint(target,refs,p.bus_features||[]);if(!best)return {type:'bus_line_tentacle',status:'unavailable',text:'No candidate bus line geometry is available.'};
       return {type:'bus_line_tentacle',status:'line',line_ref:best.line_ref,nearest_distance_m:best.distance_m,text:`Suggested answer: closest to bus line ${best.line_ref}.`};
     }
     if(p.question_kind==='tentacle'){
@@ -1657,11 +1666,16 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     state.hiderDraws=(snap.draws||[]).map(r=>({...r,cards:Array.isArray(r.cards)?r.cards:[],kept_card_keys:Array.isArray(r.kept_card_keys)?r.kept_card_keys:[],used_card_keys:Array.isArray(r.used_card_keys)?r.used_card_keys:[]}));
     state.timeTraps=snap.time_traps||[];state.privateCardUses=snap.private_card_uses||[];state.seekerLivePosition=snap.seeker_live_position||null;state.deckStatus=snap.deck_status||null;
   }
-  async function reloadGameState(){
+  async function reloadGameStateOnce(){
     await reloadGamePublic();await reloadActions();processActionNotifications();
     if(state.developerPreview&&state.role==='hider')await reloadDeveloperHiderPreview();
     else {if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();}
     deriveLocalState();await recomputePossibleArea();renderAll();
+  }
+  function reloadGameState(){
+    if(state.reloadPromise){state.reloadQueued=true;return state.reloadPromise;}
+    state.reloadPromise=(async()=>{do{state.reloadQueued=false;await reloadGameStateOnce();}while(state.reloadQueued);})().finally(()=>{state.reloadPromise=null;});
+    return state.reloadPromise;
   }
 
   function deriveLocalState(){
@@ -1745,7 +1759,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
       const cut=safeIntersect(possible,half);if(!cut){console.warn('Thermometer cut produced no geometry',p,answer);return null;}return cut;
     }
     if(p.question_kind==='bus_line_tentacle'){
-      if(answer?.status==='line'&&answer.line_ref){const region=busLineNearestRegion(possible,answer.line_ref,p.candidate_line_refs||[]);if(!region)return possible;return invert?safeDifference(possible,region):region;}return possible;
+      if(answer?.status==='line'&&answer.line_ref){const region=busLineNearestRegion(possible,answer.line_ref,p.candidate_line_refs||[],p.bus_features||[]);if(!region)return possible;return invert?safeDifference(possible,region):region;}return possible;
     }
     if(p.question_kind==='tentacle'){
       if(answer?.status==='poi'&&answer.poi){const cell=nearestPoiCell(possible,answer.poi,p.pois||[]);return invert?(cell?safeDifference(possible,cell):possible):cell;} return possible;
@@ -2151,6 +2165,18 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').like('dataset_key',`${baseKey}__chunk_%`).order('dataset_key');
     if(error)throw error;return data||[];
   }
+  async function referenceChunkRowsForTiles(baseKey,tiles){
+    initSupabaseIfNeeded();const keys=(tiles||[]).map(t=>chunkDatasetKey(baseKey,t.id));if(!keys.length)return [];
+    const {data,error}=await state.supabase.from('reference_datasets').select('dataset_key,payload,source,content_hash,updated_at,checked_at').in('dataset_key',keys).order('dataset_key');
+    if(error)throw error;return data||[];
+  }
+  function refreshTilesForGeometry(geometry,bufferM=0){
+    if(!geometry)return [];
+    let search=geometry;if(Number(bufferM)>0){try{search=turf.buffer(geometry,Number(bufferM)/1000,{units:'kilometers',steps:16});}catch(_){}}
+    let box;try{box=turf.bbox(search);}catch(_){return [];}
+    const [west,south,east,north]=box;
+    return refreshGrid().filter(t=>t.east>=west&&t.west<=east&&t.north>=south&&t.south<=north);
+  }
   function rowFresh(row){
     const t=Date.parse(row?.checked_at||row?.updated_at||'');
     return Number.isFinite(t) && Date.now()-t < REFRESH_CHUNK_MAX_AGE_DAYS*86400e3;
@@ -2233,20 +2259,18 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     statusEl.textContent='Assembling cached transit chunks…';
     await new Promise(r=>setTimeout(r,0));
     const linesGeo=mergeFeatureCollections(lineRows),uGeo=mergeFeatureCollections(uRows),stopsGeo=mergeFeatureCollections(sRows);
-    statusEl.textContent='Building U-Bahn/S-Bahn and bus network…';
+    statusEl.textContent='Building U-Bahn/S-Bahn network; bus geometry stays in transit tiles…';
     await new Promise(r=>setTimeout(r,0));
     const railLines=normalizeOfficialTransitLines(linesGeo);
-    const busLines=normalizeOfficialBusLines(linesGeo);
-    if(!busLines.length)throw new Error('Vienna public-transport WFS returned no usable bus line geometry.');
     statusEl.textContent='Building station list from Vienna line attributes…';
     await new Promise(r=>setTimeout(r,0));
     const stations=normalizeOfficialStations(uGeo,stopsGeo,railLines,city);
     if(stations.length<20)throw new Error(`Chunked Vienna transport data produced only ${stations.length} U-/S-Bahn stations.`);
     statusEl.textContent=`Saving ${stations.length} stations…`;
     await saveReferenceDataset(REF_STATIONS_KEY,{stations},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
-    statusEl.textContent=`Saving ${railLines.length} U-/S-Bahn + ${busLines.length} bus line segments…`;
-    await saveReferenceDataset(REF_TRANSIT_KEY,{railLines,busLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles`);
-    return {complete:true,results,stations:stations.length,lines:railLines.length,buses:busLines.length};
+    statusEl.textContent=`Saving ${railLines.length} U-/S-Bahn segments; bus lines remain in ${tiles.length} cached transit tiles…`;
+    await saveReferenceDataset(REF_TRANSIT_KEY,{railLines},`Chunked Stadt Wien WFS · ${tiles.length} tiles · bus geometry stored per tile`);
+    return {complete:true,results,stations:stations.length,lines:railLines.length,bus_tiles:tiles.length};
   }
   function normalizeOfficialDistricts(geo){
     const features=(geo?.features||[]).filter(isPolygon);const districts=[];
@@ -2276,7 +2300,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   async function fetchTransitReference(){
     const admin=await referenceDataset(REF_ADMIN_KEY);const city=admin?.city||state.mapData?.city;
     const bundle=await fetchOfficialTransitBundle(city);
-    return {railLines:bundle.railLines,busLines:bundle.busLines};
+    return {railLines:bundle.railLines};
   }
   async function refreshOnePoi(type,statusEl=$('developerReferenceStatus'),options={}){
     return refreshPoiChunked(type,statusEl,options);
@@ -2326,7 +2350,7 @@ ${failures.join('\n')}`,9000);
     try{
       const core=JSON.parse(localStorage.getItem(CACHE_KEY)||'null');
       if(core?.city&&validateDistricts(core.districts)&&core.stations?.length){await saveReferenceDataset(REF_ADMIN_KEY,{city:core.city,districts:core.districts},'Imported browser cache');await saveReferenceDataset(REF_STATIONS_KEY,{stations:core.stations},'Imported browser cache');count+=2;}
-      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){const existingTransit=await referenceDataset(REF_TRANSIT_KEY);await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails,busLines:Array.isArray(existingTransit?.busLines)?existingTransit.busLines:[]},'Imported browser cache');count++;}
+      const rails=JSON.parse(localStorage.getItem(RAIL_CACHE_KEY)||'null');if(Array.isArray(rails)&&rails.length){await saveReferenceDataset(REF_TRANSIT_KEY,{railLines:rails},'Imported browser cache · bus geometry remains tiled');count++;}
       for(const type of ACTIVE_POI_TYPES){const obj=JSON.parse(localStorage.getItem(POI_CACHE_PREFIX+type)||'null');if(Array.isArray(obj?.pois)){await saveReferenceDataset(REF_POI_PREFIX+type+'_v1',{pois:obj.pois},'Imported browser cache');count++;}}
       toast(`Imported ${count} cached dataset${count===1?'':'s'} to Supabase.`);await loadDeveloperDashboard();
     }catch(e){handleError(e);}
