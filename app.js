@@ -1145,7 +1145,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
       cancelQuestionPreview();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M);await ensureBusLines(state.possibleArea,bufferM);const refs=busTentacleCandidates(state.possibleArea,bufferM);
       if(!refs.length)return toast(`No Vienna bus line crosses or comes within ${Math.round(bufferM)} m of the remaining Endgame area.`);
       const busFeatures=busFeaturesForArea(state.possibleArea,refs,bufferM);if(!busFeatures.length)return toast('No usable bus geometry is available for this Endgame area. Refresh districts + transit once.');
-      showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures,domain_geometry:optimizePolygonGeometry(state.possibleArea,0.000012)};
+      showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures,domain_geometry:state.possibleArea};
       const ok=await confirmAction(`Ask ${card.title}?`,`${refs.length} Vienna bus line${refs.length===1?'':'s'} cross or come within ${Math.round(bufferM)} m of the remaining Endgame area.\n\nThe Hider confirms the line nearest to the actual hiding spot. The remaining map is cut to points closer to that line than to every other candidate line.`,`Ask Tentacle`);if(!ok){clearPendingOverlay();return;}
       const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'bus_line_tentacle',p_payload:payload});if(error)throw error;clearPendingOverlay();await reloadGameState();return;
     }
@@ -2001,7 +2001,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   }
 
   function renderPendingQuestionOverlay(){
-    clearPendingOverlay();clearPoiPreview();if(state.role!=='hider')return;const phase=targetPhaseStartMs(),pending=effectiveActions('question').filter(q=>(!phase||new Date(q.created_at).getTime()>phase)&&!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const q=pending[pending.length-1];if(!q)return;const p=q.payload||{};if(p.question_kind==='tentacle'){showPoiPreview(p.pois||[]);if(p.origin)showTentacleRangePreview(p.origin);}else if(p.question_kind==='bus_line_tentacle'){const s=suggestedAnswer(q);showBusLinePreview(p.candidate_line_refs||[],s?.line_ref||null,p.bus_features||[]);}else previewQuestionGeometry(p);
+    clearPendingOverlay();clearPoiPreview();if(state.role!=='hider')return;const phase=targetPhaseStartMs(),pending=effectiveActions('question').filter(q=>(!phase||new Date(q.created_at).getTime()>phase)&&!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const q=pending[pending.length-1];if(!q)return;const p=q.payload||{};if(p.question_kind==='tentacle'){showPoiPreview(p.pois||[]);if(p.origin)showTentacleRangePreview(p.origin);}else if(p.question_kind==='bus_line_tentacle'){/* geometry is precomputed while pending; avoid redrawing all bus segments */}else previewQuestionGeometry(p);
   }
 
   function currentQuestionPenaltyMinutes(q,nowMs=serverNowMs()){
