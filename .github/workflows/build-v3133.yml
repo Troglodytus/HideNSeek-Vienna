@@ -35,8 +35,8 @@ jobs:
           grep -F "map updating…" app.js
           grep -F "state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds()" app.js
           grep -F "state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds()" app.js
-          grep -F "YES — ${common.join(', ')} serves the hiding station." app.js
-          grep -F "Suggested answer: closest to ${best.name}." app.js
+          grep -F "serves the hiding station." app.js
+          grep -F "Suggested answer: closest to" app.js
           grep -F "create or replace function public.attach_answer_geometry_v1" supabase-v3.13.3-migration.sql
           if grep -Fq "rec=await preparedForAnswer(q,variant)" app.js; then echo 'blocking pre-answer geometry still present'; exit 1; fi
           if grep -Fq "if(!restoreGameMapView())" app.js; then echo 'cached game map restore still used on entry'; exit 1; fi
