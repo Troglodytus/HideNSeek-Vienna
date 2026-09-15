@@ -1,0 +1,44 @@
+name: v3.13.3 domain guard
+on:
+  push:
+    branches: [fix/v3.13.3-responsive-geometry]
+    paths: [.github/v3133-domain-trigger.txt]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: fix/v3.13.3-responsive-geometry
+      - name: Prevent precompute on provisional domains
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app.js');s=p.read_text()
+          old="    if(state.role!=='hider'||!q||!state.possibleArea||!heavyCanUseCurrentDomain(q))return null;"
+          new="    if(state.role!=='hider'||!q||!state.possibleArea||state.heavyAreaPending||!heavyCanUseCurrentDomain(q))return null;"
+          if s.count(old)!=1:raise SystemExit('prepare domain guard anchor mismatch')
+          s=s.replace(old,new,1)
+          old="    if(!q||!answer||!answerActionId||!domain)return Promise.resolve();const gameId=state.game?.id,key=String(answerActionId);if(state.heavyFinalizeJobs.has(key))return state.heavyFinalizeJobs.get(key);"
+          new="    if(!q||!answer||!answerActionId||!domain||state.heavyAreaPending)return Promise.resolve();const gameId=state.game?.id,key=String(answerActionId);if(state.heavyFinalizeJobs.has(key))return state.heavyFinalizeJobs.get(key);"
+          if s.count(old)!=1:raise SystemExit('finalize domain guard anchor mismatch')
+          s=s.replace(old,new,1)
+          p.write_text(s)
+          PY
+      - run: node --check app.js
+      - run: node --check geometry-worker.js
+      - name: Validate
+        run: |
+          grep -F "state.possibleArea||state.heavyAreaPending||!heavyCanUseCurrentDomain(q)" app.js
+          grep -F "!domain||state.heavyAreaPending)return Promise.resolve()" app.js
+          git diff --check
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "v3.13.3: avoid provisional-domain precompute"
+          git push origin HEAD:fix/v3.13.3-responsive-geometry
