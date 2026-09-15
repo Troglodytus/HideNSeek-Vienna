@@ -1198,7 +1198,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   }
   function possibleAreaStateSignature(){
     const zone=latestAction('endgame_zone'),phase=targetPhaseStartMs(),flipped=[...passierscheinFlippedQuestionIds()].map(String).sort();
-    const qs=effectiveActions('question').filter(q=>!phase||new Date(q.created_at).getTime()>phase).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)).map(q=>[q.id,activeAnswerForQuestion(q.id)?.id||'',activeVetoForQuestion(q.id)?.id||'']);
+    const qs=effectiveActions('question').filter(q=>!phase||new Date(q.created_at).getTime()>phase).sort((a,b)=>new Date(a.created_at)-new Date(b.created_at)).map(q=>{const a=activeAnswerForQuestion(q.id);return[q.id,a?.id||'',a?.payload?.answer?.geometry_cache_key||'',activeVetoForQuestion(q.id)?.id||''];});
     return JSON.stringify([state.game?.id||'',zone?.id||'',currentAreaMultiplier(),tinyHouseRadiusFactor(),flipped,qs]);
   }
   function cachePossibleArea(signature,possible){
@@ -2015,7 +2015,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
       if(veto){
         if(veto.payload?.automatic_tentacle&&veto.payload?.radar_miss&&q.payload?.origin){
           const r=Number(veto.payload?.radius_m||q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M),c=turf.buffer(turf.point([Number(q.payload.origin.lng),Number(q.payload.origin.lat)]),r/1000,{units:'kilometers',steps:32}),k=`auto-veto|${q.id}|${veto.id}|${hashGeometryText(heavyDomainSignature(q))}`,ready=state.heavyHistoryResults.get(k);
-          if(ready)possible=ready;else{state.heavyAreaPending=true;if(!state.heavyHistoryJobs.has(k)){const gameId=state.game?.id,job=(async()=>{await geometryIdleYield(250);return runGeometryWorker('difference_optimize',{a:possible,b:c,tolerance:0.00003,min_vertex_m:3},90000);})().then(result=>{if(state.game?.id!==gameId)return;if(result)state.heavyHistoryResults.set(k,result);state.possibleAreaSignature=null;state.possibleAreaCache.clear();return recomputePossibleArea().then(()=>renderPossibleArea());}).catch(e=>console.warn('Deferred Tentacle veto geometry failed',e)).finally(()=>state.heavyHistoryJobs.delete(k));state.heavyHistoryJobs.set(k,job);}}
+          if(ready)possible=ready;else{state.heavyAreaPending=true;if(!state.heavyHistoryJobs.has(k)){const gameId=state.game?.id,domain=possible,job=(async()=>{await geometryIdleYield(250);return runGeometryWorker('difference_optimize',{a:domain,b:c,tolerance:0.00003,min_vertex_m:3},90000);})().then(result=>{if(state.game?.id!==gameId)return;if(result)state.heavyHistoryResults.set(k,result);state.possibleAreaSignature=null;state.possibleAreaCache.clear();return recomputePossibleArea().then(()=>renderPossibleArea());}).catch(e=>console.warn('Deferred Tentacle veto geometry failed',e)).finally(()=>state.heavyHistoryJobs.delete(k));state.heavyHistoryJobs.set(k,job);}}
         }
         continue;
       }
