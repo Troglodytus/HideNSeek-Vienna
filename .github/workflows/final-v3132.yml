@@ -1,0 +1,39 @@
+name: Final v3.13.2 visual order
+on:
+  push:
+    branches: [perf/v3.13.2-worker-sql-cache]
+    paths: [.github/v3132-final-trigger.txt]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/v3.13.2-worker-sql-cache
+      - name: Keep heavy canvas below reference overlays
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app.js');s=p.read_text()
+          old="    if(!state.heavyCanvasRenderer)state.heavyCanvasRenderer=L.canvas({padding:.5,tolerance:4});"
+          new="    if(!state.gameMap.getPane('heavyGeometryPane')){const pane=state.gameMap.createPane('heavyGeometryPane');pane.style.zIndex='350';pane.style.pointerEvents='none';}\n    if(!state.heavyCanvasRenderer)state.heavyCanvasRenderer=L.canvas({pane:'heavyGeometryPane',padding:.5,tolerance:4});"
+          if s.count(old)!=1:raise SystemExit('canvas renderer anchor mismatch')
+          p.write_text(s.replace(old,new,1))
+          w=Path('geometry-worker.js');s=w.read_text()
+          old="turf.buffer(f,radiusM/1000,{units:'kilometers',steps:10})"
+          new="turf.buffer(f,radiusM/1000,{units:'kilometers',steps:12})"
+          if s.count(old)!=1:raise SystemExit('station buffer anchor mismatch')
+          w.write_text(s.replace(old,new,1))
+          PY
+      - run: node --check app.js
+      - run: node --check geometry-worker.js
+      - run: git diff --check
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js geometry-worker.js
+          git commit -m "v3.13.2: preserve map overlay order"
+          git push origin HEAD:perf/v3.13.2-worker-sql-cache
