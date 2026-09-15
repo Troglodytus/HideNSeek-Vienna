@@ -1,0 +1,40 @@
+name: Final v3.13.1 micro optimization
+
+on:
+  push:
+    branches: [perf/v3.13.1-geometry-cache]
+    paths: [.github/v3131-final-trigger.txt]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: perf/v3.13.1-geometry-cache
+      - name: Patch pending bus drawing and domain snapshot
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app.js');s=p.read_text()
+          old="showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures,domain_geometry:optimizePolygonGeometry(state.possibleArea,0.000012)};"
+          new="showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures,domain_geometry:state.possibleArea};"
+          if s.count(old)!=1: raise SystemExit('bus domain anchor mismatch')
+          s=s.replace(old,new,1)
+          old2="}else if(p.question_kind==='bus_line_tentacle'){const s=suggestedAnswer(q);showBusLinePreview(p.candidate_line_refs||[],s?.line_ref||null,p.bus_features||[]);}else previewQuestionGeometry(p);"
+          new2="}else if(p.question_kind==='bus_line_tentacle'){/* geometry is precomputed while pending; avoid redrawing all bus segments */}else previewQuestionGeometry(p);"
+          if s.count(old2)!=1: raise SystemExit('pending bus overlay anchor mismatch')
+          p.write_text(s.replace(old2,new2,1))
+          PY
+      - run: node --check app.js
+      - run: git diff --check
+      - name: Commit
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js
+          git commit -m "perf: avoid pending bus redraws"
+          git push origin HEAD:perf/v3.13.1-geometry-cache
