@@ -1881,7 +1881,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   }
 
   function renderPendingQuestionOverlay(){
-    clearPendingOverlay();clearPoiPreview();if(state.role!=='hider')return;const phase=targetPhaseStartMs(),pending=effectiveActions('question').filter(q=>(!phase||new Date(q.created_at).getTime()>phase)&&!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const q=pending[pending.length-1];if(!q)return;const p=q.payload||{};if(p.question_kind==='tentacle'){showPoiPreview(p.pois||[]);if(p.origin)showTentacleRangePreview(p.origin);const s=suggestedAnswer(q);if(s?.status==='poi')showTentacleCellPreview(q,s.poi);}else if(p.question_kind==='bus_line_tentacle'){const s=suggestedAnswer(q);showBusLinePreview(p.candidate_line_refs||[],s?.line_ref||null);if(s?.status==='line')showBusLineRegionPreview(state.possibleArea,s.line_ref,p.candidate_line_refs||[]);}else previewQuestionGeometry(p);
+    clearPendingOverlay();clearPoiPreview();if(state.role!=='hider')return;const phase=targetPhaseStartMs(),pending=effectiveActions('question').filter(q=>(!phase||new Date(q.created_at).getTime()>phase)&&!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id));const q=pending[pending.length-1];if(!q)return;const p=q.payload||{};if(p.question_kind==='tentacle'){showPoiPreview(p.pois||[]);if(p.origin)showTentacleRangePreview(p.origin);const s=suggestedAnswer(q);if(s?.status==='poi')showTentacleCellPreview(q,s.poi);}else if(p.question_kind==='bus_line_tentacle'){const s=suggestedAnswer(q);showBusLinePreview(p.candidate_line_refs||[],s?.line_ref||null,p.bus_features||[]);}else previewQuestionGeometry(p);
   }
 
   function currentQuestionPenaltyMinutes(q,nowMs=serverNowMs()){
