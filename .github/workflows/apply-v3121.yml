@@ -6,6 +6,7 @@ on:
       - fix/v3.12.1-transit-sameline
     paths:
       - .github/apply-v3121.py
+      - .github/fix-apply-v3121.py
       - .github/workflows/apply-v3121.yml
 
 permissions:
@@ -19,6 +20,8 @@ jobs:
         with:
           ref: fix/v3.12.1-transit-sameline
           fetch-depth: 0
+      - name: Tighten patch anchors
+        run: python3 .github/fix-apply-v3121.py
       - name: Apply targeted patch
         run: python3 .github/apply-v3121.py
       - name: Validate JavaScript
