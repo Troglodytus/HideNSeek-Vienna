@@ -6,6 +6,7 @@ on:
       - feature/v3.12-bus-vor
     paths:
       - .github/apply-v312.py
+      - .github/fix-v312.py
       - .github/workflows/apply-v312.yml
 
 permissions:
@@ -19,6 +20,8 @@ jobs:
         with:
           ref: feature/v3.12-bus-vor
           fetch-depth: 0
+      - name: Tighten patch anchors
+        run: python3 .github/fix-v312.py
       - name: Apply targeted patch
         run: python3 .github/apply-v312.py
       - name: Validate JavaScript
