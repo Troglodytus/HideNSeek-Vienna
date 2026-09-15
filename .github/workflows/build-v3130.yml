@@ -19,6 +19,16 @@ jobs:
         with:
           fetch-depth: 0
           ref: release/v3.13.0-from-v3.11.3
+      - name: Patch exact v3.11.3 overlay anchor
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/v313-build.py')
+          s=p.read_text()
+          s=s.replace('old="""    if(p.question_kind===\'tentacle\')','old="""if(p.question_kind===\'tentacle\')',1)
+          s=s.replace('new="""    if(p.question_kind===\'tentacle\')','new="""if(p.question_kind===\'tentacle\')',1)
+          p.write_text(s)
+          PY
       - name: Restore v3.11.3 and apply v3.13.0 patch
         run: python3 .github/v313-build.py
       - name: Validate JavaScript
