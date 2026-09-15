@@ -1,0 +1,39 @@
+name: Apply v3.12 targeted patch
+
+on:
+  push:
+    branches:
+      - feature/v3.12-bus-vor
+    paths:
+      - .github/apply-v312.py
+      - .github/workflows/apply-v312.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v3.12-bus-vor
+          fetch-depth: 0
+      - name: Apply targeted patch
+        run: python3 .github/apply-v312.py
+      - name: Validate JavaScript
+        run: node --check app.js
+      - name: Validate expected changes
+        run: |
+          grep -q "Nearest Bus Line" app.js
+          grep -q "VOR Navigation" app.js
+          grep -q "answer_bus_line_tentacle_v1" supabase-v3.12.0-migration.sql
+          grep -q "get_vor_navigation_bearing_v1" supabase-v3.12.0-migration.sql
+          git diff --check
+      - name: Commit patched application
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html styles.css supabase-v3.12.0-migration.sql
+          git commit -m "v3.12.0: add nearest bus line and VOR navigation"
+          git push origin HEAD:feature/v3.12-bus-vor
