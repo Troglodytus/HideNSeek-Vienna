@@ -1,0 +1,55 @@
+name: Build v3.13.2 worker geometry pipeline
+
+on:
+  push:
+    branches: [perf/v3.13.2-worker-sql-cache]
+    paths: [.github/v3132-trigger.txt]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: perf/v3.13.2-worker-sql-cache
+      - name: Reset generated client files to main
+        run: git checkout origin/main -- app.js index.html
+      - name: Apply v3.13.2 patch
+        run: |
+          python3 .github/v3132-patch.py
+          python3 .github/v3132-fix.py
+      - name: Validate JavaScript syntax
+        run: |
+          node --check app.js
+          node --check geometry-worker.js
+      - name: Validate performance invariants
+        run: |
+          grep -F "const APP_VERSION = '3.13.2';" app.js
+          grep -F "new Worker(`./geometry-worker.js?v=${APP_VERSION}`)" app.js
+          grep -F "save_question_geometry_v1" app.js
+          grep -F "get_answer_geometry_v1" app.js
+          grep -F "if(p.question_kind==='same_line')return resolveHeavyFinalGeometry(possible,q,answer,invert);" app.js
+          grep -F "if(p.question_kind==='bus_line_tentacle')return resolveHeavyFinalGeometry(possible,q,answer,invert);" app.js
+          grep -F "if(p.question_kind==='tentacle')return resolveHeavyFinalGeometry(possible,q,answer,invert);" app.js
+          grep -F "YES — ${common.join(', ')} serves the hiding station." app.js
+          grep -F "Suggested answer: closest to ${best.name}." app.js
+          grep -F "renderer:state.heavyCanvasRenderer" app.js
+          grep -F "create table if not exists public.game_geometry_cache" supabase-v3.13.2-migration.sql
+          grep -F "get_answer_geometry_v1" supabase-v3.13.2-migration.sql
+          if grep -Fq "domain_geometry:state.possibleArea" app.js; then echo "Bus domain geometry still embedded"; exit 1; fi
+          if grep -Fq "answer.constraint_geometry=" app.js; then echo "Inline answer geometry still present"; exit 1; fi
+          if grep -Fq "answer.constraint_geometry_yes=" app.js; then echo "Inline Same Line geometry still present"; exit 1; fi
+          git diff --check
+      - name: Show focused diff
+        run: git diff --stat origin/main -- app.js index.html geometry-worker.js supabase-v3.13.2-migration.sql
+      - name: Commit generated v3.13.2 files
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js index.html supabase-v3.13.2-migration.sql
+          git commit -m "v3.13.2: move heavy geometry off the UI thread"
+          git push origin HEAD:perf/v3.13.2-worker-sql-cache
