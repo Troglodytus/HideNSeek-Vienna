@@ -998,7 +998,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     state.geometrySqlAvailable=true;return true;
   }
   function finalizeHeavyAnsweredQuestion(q,answer,answerActionId,variant,domain,signature){
-    if(!q||!answer||!answerActionId||!domain)return Promise.resolve();const gameId=state.game?.id,key=String(answerActionId);if(state.heavyFinalizeJobs.has(key))return state.heavyFinalizeJobs.get(key);
+    if(!q||!answer||!answerActionId||!domain||state.heavyAreaPending)return Promise.resolve();const gameId=state.game?.id,key=String(answerActionId);if(state.heavyFinalizeJobs.has(key))return state.heavyFinalizeJobs.get(key);
     const job=(async()=>{try{
       let rec=null,geometry=null;if(state.game?.id!==gameId)return;
       if(q.payload?.question_kind==='same_line'){
@@ -1014,7 +1014,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     state.heavyFinalizeJobs.set(key,job);return job;
   }
   async function prepareHeavyQuestion(q){
-    if(state.role!=='hider'||!q||!state.possibleArea||!heavyCanUseCurrentDomain(q))return null;
+    if(state.role!=='hider'||!q||!state.possibleArea||state.heavyAreaPending||!heavyCanUseCurrentDomain(q))return null;
     const kind=q.payload?.question_kind;if(!['same_line','tentacle','bus_line_tentacle'].includes(kind))return null;
     const signature=heavyDomainSignature(q),jobKey=`prepare:${q.id}:${hashGeometryText(signature)}`;
     if(state.heavyPrepareJobs.has(jobKey))return state.heavyPrepareJobs.get(jobKey);
