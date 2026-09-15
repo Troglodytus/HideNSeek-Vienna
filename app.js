@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.13.1';
+  const APP_VERSION = '3.13.2';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -129,7 +129,8 @@
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,notificationPrimed:false,seenNotificationActionIds:new Set(),photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
     developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false,
     vorQuestionId:null,vorBearing:null,vorHeading:null,vorExpiresAt:0,vorGeoWatchId:null,vorOrientationHandler:null,vorCompassPermission:'unknown',vorLastBearingFetch:0,vorBearingBusy:false,vorRenderTimer:null,
-    geometryCache:new Map(),geometryJobs:new Map(),geometryWarmScheduled:false,possibleAreaSignature:null,possibleAreaCache:new Map(),possibleAreaKm2:0,possibleExcludedArea:null,possibleRenderSignature:null
+    geometryCache:new Map(),geometryJobs:new Map(),geometryWarmScheduled:false,possibleAreaSignature:null,possibleAreaCache:new Map(),possibleAreaKm2:0,possibleExcludedArea:null,possibleRenderSignature:null,
+    geometryWorker:null,geometryWorkerSeq:0,geometryWorkerPending:new Map(),heavyPrepared:new Map(),heavyPrepareJobs:new Map(),answerGeometryCache:new Map(),geometrySqlAvailable:null,heavyCanvasRenderer:null
   };
 
   const $ = id => document.getElementById(id);
@@ -787,7 +788,8 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
 
   async function enterGameCommon(){
     state.curseSoundPrimed=false;state.seenCurseIds=new Set();state.notificationPrimed=false;state.seenNotificationActionIds=new Set();state.photoUploadToken=null;state.photoUrlCache=new Map();state.previewQuestionSlot=null;state.previewQuestionCard=null;
-    state.geometryCache=new Map();state.geometryJobs=new Map();state.geometryWarmScheduled=false;state.possibleAreaSignature=null;state.possibleAreaCache=new Map();state.possibleAreaKm2=0;state.possibleExcludedArea=null;state.possibleRenderSignature=null;
+    try{state.geometryWorker?.terminate();}catch(_){}state.geometryWorker=null;state.geometryWorkerSeq=0;state.geometryWorkerPending=new Map();
+    state.geometryCache=new Map();state.geometryJobs=new Map();state.geometryWarmScheduled=false;state.possibleAreaSignature=null;state.possibleAreaCache=new Map();state.possibleAreaKm2=0;state.possibleExcludedArea=null;state.possibleRenderSignature=null;state.heavyPrepared=new Map();state.heavyPrepareJobs=new Map();state.answerGeometryCache=new Map();state.geometrySqlAvailable=null;state.heavyCanvasRenderer=null;
     await Promise.all([ensureMapData(),loadQuestionCatalog()]);
     clearDeveloperPreviewLock();
     $('roleKicker').textContent=`${state.role.toUpperCase()}${state.developerPreview?' · DEV PREVIEW':''}`; $('gameTitle').textContent=state.game.name; $('seekerControls').classList.toggle('hidden',state.role!=='seeker');
@@ -799,6 +801,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     if(!state.gameMap){
       state.gameMap=L.map('gameMap',baseMapOptions());addBaseTiles(state.gameMap);state.gameMap.on('click',e=>handleGameMapClick(e.latlng));state.gameMap.on('moveend',saveGameMapView);
     }
+    if(!state.heavyCanvasRenderer)state.heavyCanvasRenderer=L.canvas({padding:.5,tolerance:4});
     state.gameMap.invalidateSize(false);clearPrivateMapLayers();drawReferenceLayers(state.gameMap,'game-',f=>handleReferenceStationClick(f));
     if(!restoreGameMapView())state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});
     setTimeout(()=>{state.gameMap?.invalidateSize(false);if(!restoreGameMapView())state.gameMap?.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});},80);
@@ -913,6 +916,123 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     const job=(async()=>{await geometryIdleYield();const value=await producer();return geometryCacheSet(key,value);})().finally(()=>state.geometryJobs?.delete(key));
     if(!state.geometryJobs)state.geometryJobs=new Map();state.geometryJobs.set(key,job);return job;
   }
+  function geometryRpcMissing(error){
+    const m=String(error?.message||'').toLowerCase();return error?.code==='PGRST202'||m.includes('could not find the function')||m.includes('schema cache');
+  }
+  function ensureGeometryWorker(){
+    if(state.geometryWorker)return state.geometryWorker;
+    if(typeof Worker==='undefined')throw new Error('This browser does not support the background geometry worker required by v3.13.2.');
+    const worker=new Worker(`./geometry-worker.js?v=${APP_VERSION}`);
+    worker.onmessage=e=>{
+      const msg=e.data||{},pending=state.geometryWorkerPending?.get(msg.id);if(!pending)return;
+      clearTimeout(pending.timer);state.geometryWorkerPending.delete(msg.id);
+      if(msg.ok)pending.resolve(msg.result);else pending.reject(new Error(msg.error||'Background geometry calculation failed.'));
+    };
+    worker.onerror=e=>{
+      const err=new Error(e?.message||'Background geometry worker failed.');
+      for(const pending of state.geometryWorkerPending?.values()||[]){clearTimeout(pending.timer);pending.reject(err);}state.geometryWorkerPending?.clear();
+      try{worker.terminate();}catch(_){}if(state.geometryWorker===worker)state.geometryWorker=null;
+    };
+    state.geometryWorker=worker;return worker;
+  }
+  function runGeometryWorker(op,payload,timeoutMs=180000){
+    const worker=ensureGeometryWorker(),id=`g${++state.geometryWorkerSeq}-${Date.now()}`;
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{state.geometryWorkerPending.delete(id);reject(new Error(`Background geometry timed out (${op}).`));},timeoutMs);
+      state.geometryWorkerPending.set(id,{resolve,reject,timer});
+      try{worker.postMessage({id,op,payload});}catch(e){clearTimeout(timer);state.geometryWorkerPending.delete(id);reject(e);}
+    });
+  }
+  function hashGeometryText(text){
+    let h=2166136261;for(let i=0;i<String(text).length;i++){h^=String(text).charCodeAt(i);h=Math.imul(h,16777619);}return (h>>>0).toString(16).padStart(8,'0');
+  }
+  function questionChronoCompare(a,b){
+    const ta=new Date(a?.created_at||0).getTime(),tb=new Date(b?.created_at||0).getTime();return ta-tb||String(a?.id||'').localeCompare(String(b?.id||''));
+  }
+  function heavyDomainSignature(q){
+    const phase=targetPhaseStartMs(),zone=latestAction('endgame_zone'),flipped=[...passierscheinFlippedQuestionIds()].map(String).sort();
+    const prior=effectiveActions('question').filter(x=>(!phase||new Date(x.created_at).getTime()>phase)&&questionChronoCompare(x,q)<0).sort(questionChronoCompare).map(x=>[x.id,activeAnswerForQuestion(x.id)?.id||'',activeVetoForQuestion(x.id)?.id||'']);
+    return JSON.stringify([state.game?.id||'',zone?.id||'',currentAreaMultiplier(),tinyHouseRadiusFactor(),flipped,prior]);
+  }
+  function heavyCanUseCurrentDomain(q){
+    const phase=targetPhaseStartMs();return !effectiveActions('question').some(x=>(!phase||new Date(x.created_at).getTime()>phase)&&questionChronoCompare(x,q)>0&&(activeAnswerForQuestion(x.id)||activeVetoForQuestion(x.id)));
+  }
+  function heavyMemoryKey(q,variant,signature){return `${q?.id||'q'}|${variant}|${hashGeometryText(signature)}`;}
+  function heavySqlKey(q,variant,signature){
+    const safe=String(variant||'result').replace(/[^a-zA-Z0-9_.:-]/g,'_').slice(0,48);return `qgeom:${q.id}:${safe}:${hashGeometryText(signature)}`;
+  }
+  function rememberHeavyPrepared(q,variant,signature,geometry,cacheKey,persisted=false){
+    if(!geometry)return null;const rec={question_id:q.id,variant,domain_signature:signature,geometry,cache_key:cacheKey||heavySqlKey(q,variant,signature),persisted:!!persisted};
+    state.heavyPrepared.set(heavyMemoryKey(q,variant,signature),rec);if(rec.persisted)state.answerGeometryCache.set(rec.cache_key,rec);return rec;
+  }
+  async function loadPrivatePrepared(q,variant,signature){
+    const mk=heavyMemoryKey(q,variant,signature),mem=state.heavyPrepared.get(mk);if(mem)return mem;
+    if(state.role!=='hider'||!state.hiderPassword||state.geometrySqlAvailable===false)return null;
+    const cacheKey=heavySqlKey(q,variant,signature);
+    const {data,error}=await state.supabase.rpc('get_hider_question_geometry_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_cache_key:cacheKey});
+    if(error){if(geometryRpcMissing(error))state.geometrySqlAvailable=false;else console.warn('Private geometry-cache lookup failed',error);return null;}
+    state.geometrySqlAvailable=true;const row=(data||[])[0];if(!row?.geometry||row.domain_signature!==signature)return null;
+    return rememberHeavyPrepared(q,variant,signature,row.geometry,row.cache_key,true);
+  }
+  async function persistPrepared(q,variant,signature,geometry){
+    const existing=rememberHeavyPrepared(q,variant,signature,geometry,heavySqlKey(q,variant,signature),false);if(!existing||state.role!=='hider'||!state.hiderPassword||state.geometrySqlAvailable===false)return existing;
+    const {data,error}=await state.supabase.rpc('save_question_geometry_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_cache_key:existing.cache_key,p_domain_signature:signature,p_geometry:geometry});
+    if(error){if(geometryRpcMissing(error))state.geometrySqlAvailable=false;else console.warn('Geometry-cache save failed',error);return existing;}
+    state.geometrySqlAvailable=true;existing.persisted=!!data;state.heavyPrepared.set(heavyMemoryKey(q,variant,signature),existing);if(existing.persisted)state.answerGeometryCache.set(existing.cache_key,existing);return existing;
+  }
+  async function prepareHeavyQuestion(q){
+    if(state.role!=='hider'||!q||!state.possibleArea||!heavyCanUseCurrentDomain(q))return null;
+    const kind=q.payload?.question_kind;if(!['same_line','tentacle','bus_line_tentacle'].includes(kind))return null;
+    const signature=heavyDomainSignature(q),jobKey=`prepare:${q.id}:${hashGeometryText(signature)}`;
+    if(state.heavyPrepareJobs.has(jobKey))return state.heavyPrepareJobs.get(jobKey);
+    const job=(async()=>{
+      const domain=state.possibleArea,p=q.payload||{};
+      if(kind==='same_line'){
+        let yes=await loadPrivatePrepared(q,'yes',signature),no=await loadPrivatePrepared(q,'no',signature);if(yes&&no)return {yes,no};
+        const bundle=await runGeometryWorker('same_line_final',{domain,line_refs:p.line_refs||[],radius_m:250,rail_lines:state.mapData?.railLines||[],stations:state.mapData?.stations||[]});
+        if(bundle?.yes)yes=await persistPrepared(q,'yes',signature,bundle.yes);if(bundle?.no)no=await persistPrepared(q,'no',signature,bundle.no);return {yes,no};
+      }
+      const suggested=suggestedAnswer(q);
+      if(kind==='tentacle'){
+        if(suggested?.status!=='poi'||!suggested.poi)return null;const variant=`poi:${suggested.poi.id||suggested.poi.name||'poi'}`;let rec=await loadPrivatePrepared(q,variant,signature);if(rec)return rec;
+        const geometry=await runGeometryWorker('tentacle_final',{domain,selected:suggested.poi,pois:p.pois||[],invert:false});return geometry?persistPrepared(q,variant,signature,geometry):null;
+      }
+      if(suggested?.status!=='line'||!suggested.line_ref)return null;const variant=`line:${String(suggested.line_ref).toUpperCase()}`;let rec=await loadPrivatePrepared(q,variant,signature);if(rec)return rec;
+      const geometry=await runGeometryWorker('bus_final',{domain,selected_ref:suggested.line_ref,refs:p.candidate_line_refs||[],features:p.bus_features||[],grid_m:BUS_TENTACLE_GRID_M,invert:false});return geometry?persistPrepared(q,variant,signature,geometry):null;
+    })().finally(()=>state.heavyPrepareJobs.delete(jobKey));
+    state.heavyPrepareJobs.set(jobKey,job);return job;
+  }
+  async function preparedForAnswer(q,variant){
+    const signature=heavyDomainSignature(q),mk=heavyMemoryKey(q,variant,signature);let rec=state.heavyPrepared.get(mk);if(rec)return rec;
+    if(!heavyCanUseCurrentDomain(q))return null;toast('Finalizing map geometry in the background…',2200);const prepared=await prepareHeavyQuestion(q);
+    if(q.payload?.question_kind==='same_line')rec=prepared?.[variant]||null;else rec=prepared||null;return rec;
+  }
+  async function loadPublishedAnswerGeometry(q,answer,expectedSignature){
+    if(!answer?.geometry_cache_key||answer.geometry_domain_signature!==expectedSignature)return null;
+    const key=answer.geometry_cache_key,mem=state.answerGeometryCache.get(key);if(mem?.domain_signature===expectedSignature&&mem.geometry)return mem.geometry;
+    if(state.geometrySqlAvailable===false)return null;
+    const {data,error}=await state.supabase.rpc('get_answer_geometry_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_cache_key:key});
+    if(error){if(geometryRpcMissing(error))state.geometrySqlAvailable=false;else console.warn('Published geometry-cache lookup failed',error);return null;}
+    state.geometrySqlAvailable=true;const row=(data||[])[0];if(!row?.geometry||row.domain_signature!==expectedSignature)return null;
+    state.answerGeometryCache.set(key,{geometry:row.geometry,domain_signature:row.domain_signature,cache_key:row.cache_key,persisted:true});return row.geometry;
+  }
+  async function resolveHeavyFinalGeometry(possible,q,answer,invert=false){
+    if(!possible||!q||!answer)return possible;const p=q.payload||{},expected=heavyDomainSignature(q);
+    if(!invert){const published=await loadPublishedAnswerGeometry(q,answer,expected);if(published)return published;}
+    const ansId=activeAnswerForQuestion(q.id)?.id||'answer',fallbackKey=`heavy-final:${q.id}:${ansId}:${hashGeometryText(expected)}:${invert?'i':'n'}`,cached=geometryCacheGet(fallbackKey);if(cached)return cached;
+    return geometryJob(fallbackKey,async()=>{
+      if(p.question_kind==='same_line'){
+        const bundle=await runGeometryWorker('same_line_final',{domain:possible,line_refs:p.line_refs||[],radius_m:250,rail_lines:state.mapData?.railLines||[],stations:state.mapData?.stations||[]});
+        const value=answer?.type==='boolean'?(invert?!answer.value:!!answer.value):false;return value?bundle?.yes:bundle?.no;
+      }
+      if(p.question_kind==='tentacle'&&answer?.status==='poi'&&answer.poi)return runGeometryWorker('tentacle_final',{domain:possible,selected:answer.poi,pois:p.pois||[],invert:!!invert});
+      if(p.question_kind==='bus_line_tentacle'&&answer?.status==='line'&&answer.line_ref){
+        if(!(p.bus_features||[]).length){console.warn('Bus fallback geometry unavailable: question input was compacted before a persisted result could be loaded.');return possible;}
+        return runGeometryWorker('bus_final',{domain:possible,selected_ref:answer.line_ref,refs:p.candidate_line_refs||[],features:p.bus_features||[],grid_m:BUS_TENTACLE_GRID_M,invert:!!invert});
+      }
+      return possible;
+    });
+  }
   function ringPointDistanceM(a,b){
     if(!a||!b)return Infinity;const A=mercator(Number(a[1]),Number(a[0])),B=mercator(Number(b[1]),Number(b[0]));return Math.hypot(A.x-B.x,A.y-B.y);
   }
@@ -1023,17 +1143,10 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     const phase=targetPhaseStartMs();return effectiveActions('question').filter(q=>(!phase||new Date(q.created_at).getTime()>phase)&&!activeAnswerForQuestion(q.id)&&!activeVetoForQuestion(q.id)).sort((a,b)=>new Date(b.created_at)-new Date(a.created_at));
   }
   function scheduleHeavyGeometryWarmups(){
-    if(state.geometryWarmScheduled||!state.game||!state.possibleArea)return;state.geometryWarmScheduled=true;
+    if(state.role!=='hider'||state.geometryWarmScheduled||!state.game||!state.possibleArea)return;state.geometryWarmScheduled=true;
     setTimeout(async()=>{
-      try{
-        for(const q of heavyPendingQuestions()){
-          const kind=q.payload?.question_kind;
-          if(kind==='same_line')await ensureSameLineConstraintBundle(q);
-          else if(state.role==='hider'&&kind==='tentacle'){const s=suggestedAnswer(q);if(s?.status==='poi'&&s.poi)await ensureTentacleConstraintGeometry(q,s.poi);}
-          else if(state.role==='hider'&&kind==='bus_line_tentacle'){const s=suggestedAnswer(q);if(s?.status==='line'&&s.line_ref)await ensureBusConstraintGeometry(q,s.line_ref);}
-          await geometryIdleYield(180);
-        }
-      }catch(e){console.warn('Background geometry warmup failed',e);}finally{state.geometryWarmScheduled=false;}
+      try{for(const q of heavyPendingQuestions()){if(['same_line','tentacle','bus_line_tentacle'].includes(q.payload?.question_kind))await prepareHeavyQuestion(q);await geometryIdleYield(220);}}
+      catch(e){console.warn('Background geometry warmup failed',e);}finally{state.geometryWarmScheduled=false;}
     },0);
   }
   function possibleAreaStateSignature(){
@@ -1048,12 +1161,12 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
   function excludedGeometryKey(signature){return `excluded:${signature}`;}
   function applyExcludedGeometryIfCurrent(signature,geometry){
     if(state.possibleAreaSignature!==signature||state.possibleRenderSignature!==signature||!state.gameMap)return;state.possibleExcludedArea=geometry;
-    state.mapLayers.excluded?.remove();state.mapLayers.excluded=null;if(geometry)state.mapLayers.excluded=L.geoJSON(geometry,{style:mapGeoStyle('excluded'),interactive:false}).addTo(state.gameMap);
+    state.mapLayers.excluded?.remove();state.mapLayers.excluded=null;if(geometry)state.mapLayers.excluded=L.geoJSON(geometry,{style:mapGeoStyle('excluded'),interactive:false,renderer:state.heavyCanvasRenderer,smoothFactor:2.5}).addTo(state.gameMap);
     state.mapLayers['game-rails']?.bringToFront?.();state.mapLayers['game-stations']?.bringToFront?.();state.mapLayers.publicTimeTraps?.bringToFront?.();
   }
   function scheduleExcludedGeometry(signature,possible){
     if(!possible||!signature)return;const key=excludedGeometryKey(signature),cached=geometryCacheGet(key);if(cached){applyExcludedGeometryIfCurrent(signature,cached);return;}
-    geometryJob(key,async()=>{await geometryIdleYield(180);const ex=safeDifference(state.mapData.city,possible);return optimizePolygonGeometry(ex,0.000025);}).then(ex=>applyExcludedGeometryIfCurrent(signature,ex)).catch(e=>console.warn('Excluded-area background build failed',e));
+    geometryJob(key,()=>runGeometryWorker('difference_optimize',{a:state.mapData.city,b:possible,tolerance:0.00004,min_vertex_m:4})).then(ex=>applyExcludedGeometryIfCurrent(signature,ex)).catch(e=>console.warn('Excluded-area background build failed',e));
   }
 
 
@@ -1145,7 +1258,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
       cancelQuestionPreview();const bufferM=Number(card.search_buffer_m||BUS_TENTACLE_SEARCH_BUFFER_M);await ensureBusLines(state.possibleArea,bufferM);const refs=busTentacleCandidates(state.possibleArea,bufferM);
       if(!refs.length)return toast(`No Vienna bus line crosses or comes within ${Math.round(bufferM)} m of the remaining Endgame area.`);
       const busFeatures=busFeaturesForArea(state.possibleArea,refs,bufferM);if(!busFeatures.length)return toast('No usable bus geometry is available for this Endgame area. Refresh districts + transit once.');
-      showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures,domain_geometry:state.possibleArea};
+      showBusLinePreview(refs,null,busFeatures);const payload={slot_key:card.slot,question_kind:'bus_line_tentacle',title:card.title,search_buffer_m:bufferM,candidate_line_refs:refs,bus_features:busFeatures};
       const ok=await confirmAction(`Ask ${card.title}?`,`${refs.length} Vienna bus line${refs.length===1?'':'s'} cross or come within ${Math.round(bufferM)} m of the remaining Endgame area.\n\nThe Hider confirms the line nearest to the actual hiding spot. The remaining map is cut to points closer to that line than to every other candidate line.`,`Ask Tentacle`);if(!ok){clearPendingOverlay();return;}
       const {error}=await state.supabase.rpc('ask_question_v4',{p_game_id:state.game.id,p_slot_key:card.slot,p_kind:'bus_line_tentacle',p_payload:payload});if(error)throw error;clearPendingOverlay();await reloadGameState();return;
     }
@@ -1355,7 +1468,7 @@ Hiding station: ${state.createStation.properties.stationName}`,'Create'); if(!ok
     const s=suggestedAnswer(q),pen=currentQuestionPenaltyMinutes(q),label=booleanResolutionLabel(q,value);const ok=await confirmAction(`Send ${label}?`,`${questionLabel(q)}\n\nPreview: ${s?.text||'Unavailable'}${pen?`\n\nLate penalty: −${pen} min`:''}`,`Send ${label}`);if(!ok)return;
     const answer={type:'boolean',value};
     if(q.payload?.question_kind==='same_line'){
-      const bundle=await ensureSameLineConstraintBundle(q);if(bundle){answer.constraint_geometry_yes=bundle.yes;answer.constraint_geometry_no=bundle.no;}
+      const variant=value?'yes':'no',rec=await preparedForAnswer(q,variant);answer.geometry_variant=variant;if(rec){answer.geometry_domain_signature=rec.domain_signature;if(rec.persisted)answer.geometry_cache_key=rec.cache_key;}
     }
     const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
@@ -1370,7 +1483,7 @@ Hider is closest to ${s.poi.name}.
 Automatic private check: ${s.text}
 
 Only the POI name is sent publicly; the private validation distance is never included in the answer.${currentQuestionPenaltyMinutes(q)?`\n\nCurrent late penalty: −${currentQuestionPenaltyMinutes(q)} min`:''}`,`Send answer`);if(!ok)return;
-    const cell=await ensureTentacleConstraintGeometry(q,s.poi);if(cell)answer.constraint_geometry=cell;
+    const variant=`poi:${s.poi.id||s.poi.name||'poi'}`,rec=await preparedForAnswer(q,variant);answer.geometry_variant=variant;if(rec){answer.geometry_domain_signature=rec.domain_signature;if(rec.persisted)answer.geometry_cache_key=rec.cache_key;}
     const {error}=await state.supabase.rpc('answer_question_v5',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
 
@@ -1378,7 +1491,7 @@ Only the POI name is sent publicly; the private validation distance is never inc
     const s=suggestedAnswer(q);if(s?.status!=='line'||!s.line_ref)return toast('No valid bus-line answer is available. Refresh districts + transit if necessary.');
     const answer={type:'bus_line_tentacle',status:'line',line_ref:s.line_ref},pen=currentQuestionPenaltyMinutes(q);
     const ok=await confirmAction('Send Nearest Bus Line answer?',`${questionLabel(q)}\n\nClosest line: ${s.line_ref}.\n\nOnly the line identity is published; the private distance is not.${pen?`\n\nCurrent late penalty: −${pen} min`:''}`,`Send answer`);if(!ok)return;
-    const region=await ensureBusConstraintGeometry(q,s.line_ref);if(region)answer.constraint_geometry=region;
+    const variant=`line:${String(s.line_ref).toUpperCase()}`,rec=await preparedForAnswer(q,variant);answer.geometry_variant=variant;if(rec){answer.geometry_domain_signature=rec.domain_signature;if(rec.persisted)answer.geometry_cache_key=rec.cache_key;}
     const {error}=await state.supabase.rpc('answer_bus_line_tentacle_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_answer:answer});if(error)throw error;await reloadGameState();
   }
 
@@ -1852,12 +1965,12 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     for(const q of qs){
       const veto=activeVetoForQuestion(q.id);
       if(veto){
-        if(veto.payload?.automatic_tentacle&&veto.payload?.radar_miss&&q.payload?.origin){const r=Number(veto.payload?.radius_m||q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M),c=turf.buffer(turf.point([Number(q.payload.origin.lng),Number(q.payload.origin.lat)]),r/1000,{units:'kilometers',steps:32});possible=safeDifference(possible,c);}
+        if(veto.payload?.automatic_tentacle&&veto.payload?.radar_miss&&q.payload?.origin){const r=Number(veto.payload?.radius_m||q.payload?.valid_distance_m||TENTACLE_VALID_DISTANCE_M),c=turf.buffer(turf.point([Number(q.payload.origin.lng),Number(q.payload.origin.lat)]),r/1000,{units:'kilometers',steps:32});possible=await runGeometryWorker('difference_optimize',{a:possible,b:c,tolerance:0.00003,min_vertex_m:3})||possible;}
         continue;
       }
       const a=activeAnswerForQuestion(q.id);if(!a)continue;possible=await applyConstraint(possible,q,a.payload?.answer,a38Flipped.has(String(q.id)));if(!possible)break;await geometryIdleYield(80);
     }
-    possible=optimizePolygonGeometry(possible,0.000012);state.possibleArea=possible;state.possibleAreaSignature=signature;state.possibleAreaKm2=possible?turf.area(possible)/1e6:0;state.possibleExcludedArea=geometryCacheGet(excludedGeometryKey(signature));cachePossibleArea(signature,possible);
+    state.possibleArea=possible;state.possibleAreaSignature=signature;state.possibleAreaKm2=possible?turf.area(possible)/1e6:0;state.possibleExcludedArea=geometryCacheGet(excludedGeometryKey(signature));cachePossibleArea(signature,possible);
   }
 
   async function applyConstraint(possible,q,answer,invert=false){
@@ -1866,20 +1979,12 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(p.question_kind==='district'){const d=state.mapData.districts.find(x=>x.number===Number(p.district_number));return d?(boolValue?safeIntersect(possible,d.feature):safeDifference(possible,d.feature)):possible;}
     if(p.question_kind==='district_set'){const g=districtSetGeometry(p.districts||[]);return g?(boolValue?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
     if(p.question_kind==='landmark_compare'){const c=turf.buffer(turf.point([Number(p.landmark.lng),Number(p.landmark.lat)]),Number(p.radius_m)/1000,{units:'kilometers',steps:48});return boolValue?safeIntersect(possible,c):safeDifference(possible,c);}
-    if(p.question_kind==='same_line'){
-      let yes=answer?.constraint_geometry_yes,no=answer?.constraint_geometry_no;
-      if(!yes||!no){const bundle=geometryCacheGet(sameLineBundleKey(q))||await ensureSameLineConstraintBundle(q);yes=yes||bundle?.yes;no=no||bundle?.no;}
-      if(boolValue)return yes?safeIntersect(possible,yes):possible;return no?safeDifference(possible,no):possible;
-    }
+    if(p.question_kind==='same_line')return resolveHeavyFinalGeometry(possible,q,answer,invert);
     if(p.question_kind==='station_interchange'){const g=interchangeStationArea(Number(p.radius_m||250));return g?(boolValue?safeIntersect(possible,g):safeDifference(possible,g)):possible;}
     if(p.question_kind==='directional'){const half=directionHalfPlane(p.origin,p.axis,!!boolValue);return half?safeIntersect(possible,half):possible;}
     if(p.question_kind==='thermometer'){const half=warmerHalfPlane(possible,p.from,p.to,!!boolValue);if(!half)return possible;const cut=safeIntersect(possible,half);if(!cut){console.warn('Thermometer cut produced no geometry',p,answer);return null;}return cut;}
-    if(p.question_kind==='bus_line_tentacle'){
-      if(answer?.status==='line'&&answer.line_ref){const region=answer.constraint_geometry||geometryCacheGet(busConstraintKey(q,answer.line_ref))||await ensureBusConstraintGeometry(q,answer.line_ref);if(!region)return possible;return invert?safeDifference(possible,region):safeIntersect(possible,region);}return possible;
-    }
-    if(p.question_kind==='tentacle'){
-      if(answer?.status==='poi'&&answer.poi){const cell=answer.constraint_geometry||geometryCacheGet(tentacleConstraintKey(q,answer.poi))||await ensureTentacleConstraintGeometry(q,answer.poi);if(!cell)return possible;return invert?safeDifference(possible,cell):safeIntersect(possible,cell);}return possible;
-    }
+    if(p.question_kind==='bus_line_tentacle')return resolveHeavyFinalGeometry(possible,q,answer,invert);
+    if(p.question_kind==='tentacle')return resolveHeavyFinalGeometry(possible,q,answer,invert);
     return possible;
   }
 
@@ -1926,7 +2031,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     const signature=state.possibleAreaSignature||'none',alreadyDrawn=state.possibleRenderSignature===signature&&((state.possibleArea&&state.mapLayers.possible)||(!state.possibleArea&&!state.mapLayers.possible));
     if(!alreadyDrawn){
       state.mapLayers.possible?.remove();state.mapLayers.excluded?.remove();state.mapLayers.possible=null;state.mapLayers.excluded=null;
-      if(state.possibleArea){state.mapLayers.possible=L.geoJSON(state.possibleArea,{style:mapGeoStyle('possible'),interactive:false}).addTo(state.gameMap);if(state.possibleExcludedArea)state.mapLayers.excluded=L.geoJSON(state.possibleExcludedArea,{style:mapGeoStyle('excluded'),interactive:false}).addTo(state.gameMap);else scheduleExcludedGeometry(signature,state.possibleArea);}state.possibleRenderSignature=signature;
+      if(state.possibleArea){state.mapLayers.possible=L.geoJSON(state.possibleArea,{style:mapGeoStyle('possible'),interactive:false,renderer:state.heavyCanvasRenderer,smoothFactor:2.5}).addTo(state.gameMap);if(state.possibleExcludedArea)state.mapLayers.excluded=L.geoJSON(state.possibleExcludedArea,{style:mapGeoStyle('excluded'),interactive:false,renderer:state.heavyCanvasRenderer,smoothFactor:2.5}).addTo(state.gameMap);else scheduleExcludedGeometry(signature,state.possibleArea);}state.possibleRenderSignature=signature;
     }else if(state.possibleArea&&!state.mapLayers.excluded&&!state.possibleExcludedArea)scheduleExcludedGeometry(signature,state.possibleArea);
     const km2=Number(state.possibleAreaKm2||0);$('remainingAreaText').textContent=state.possibleArea?`${km2.toFixed(km2>=10?1:2)} km² possible`:'0 km² possible';
     renderPublicEndgameZone();renderPublicTimeTraps();state.mapLayers['game-rails']?.bringToFront?.();state.mapLayers['game-stations']?.bringToFront?.();state.mapLayers.publicTimeTraps?.bringToFront?.();

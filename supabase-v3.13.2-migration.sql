@@ -112,7 +112,6 @@ set payload=jsonb_set(
   true
 )
 where kind='answer'
-  and is_active
   and jsonb_typeof(payload->'answer')='object'
   and (
     (payload->'answer') ? 'constraint_geometry'
@@ -144,7 +143,9 @@ begin
       update public.curse_draws set cards=cards||v_extra,keep_limit=least(2,jsonb_array_length(cards||v_extra)) where question_action_id=p_question_action_id;
     end if;
   end if;
-  update public.game_actions set payload=payload-'bus_features'-'domain_geometry' where id=p_question_action_id;
+  if nullif(p_answer->>'geometry_cache_key','') is not null then
+    update public.game_actions set payload=payload-'bus_features'-'domain_geometry' where id=p_question_action_id;
+  end if;
   return v_answer_id;
 end;$$;
 grant execute on function public.answer_bus_line_tentacle_v1(uuid,uuid,text,jsonb) to anon,authenticated;

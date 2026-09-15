@@ -163,7 +163,8 @@ function busFinal(payload){
     if(winner===selected) kept.push(clipped);
   }
   let region=unionList(kept);
-  if(payload.invert && region) region=difference2(domain,region) || domain;
+  if(!region) return optimize(domain);
+  if(payload.invert) region=difference2(domain,region) || domain;
   return optimize(region);
 }
 
