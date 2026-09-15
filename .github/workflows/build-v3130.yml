@@ -6,6 +6,7 @@ on:
       - release/v3.13.0-from-v3.11.3
     paths:
       - .github/v313-build.py
+      - .github/v313-trigger.txt
 
 permissions:
   contents: write
