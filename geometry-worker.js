@@ -118,7 +118,7 @@ function closerHalfPlane(a,b){
   return turf.polygon([[...pts.map(p=>[p.lng,p.lat]),[pts[0].lng,pts[0].lat]]]);
 }
 function tentacleFinal(payload){
-  let out=payload.domain;const selected=payload.selected,pois=payload.pois||[];
+  const domain=payload.domain;let out=domain;const selected=payload.selected,pois=payload.pois||[];
   if(!out || !selected) return out||null;
   const A={lat:Number(selected.lat),lng:Number(selected.lng)};
   for(const other of pois){
@@ -126,6 +126,7 @@ function tentacleFinal(payload){
     const half=closerHalfPlane(A,{lat:Number(other.lat),lng:Number(other.lng)});
     if(half){ out=intersect2(out,half); if(!out) break; }
   }
+  if(payload.invert && out) out=difference2(domain,out) || domain;
   return optimize(out);
 }
 
@@ -161,7 +162,9 @@ function busFinal(payload){
     }
     if(winner===selected) kept.push(clipped);
   }
-  return optimize(unionList(kept));
+  let region=unionList(kept);
+  if(payload.invert && region) region=difference2(domain,region) || domain;
+  return optimize(region);
 }
 
 function differenceOptimized(payload){ return optimize(difference2(payload.a,payload.b),Number(payload.tolerance||0.000035),Number(payload.min_vertex_m||3)); }
