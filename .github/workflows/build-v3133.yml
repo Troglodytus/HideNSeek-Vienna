@@ -1,0 +1,151 @@
+name: Build v3.13.3 startup geometry hotfix
+on:
+  push:
+    branches: [hotfix/v3.13.3-startup-geometry]
+    paths: [.github/v3133-trigger.txt]
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: hotfix/v3.13.3-startup-geometry
+      - name: Apply hotfix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('app.js'); s=p.read_text()
+          def once(old,new,label):
+              global s
+              n=s.count(old)
+              if n!=1: raise SystemExit(f'{label}: expected 1, found {n}')
+              s=s.replace(old,new,1)
+
+          once("const APP_VERSION = '3.13.2';","const APP_VERSION = '3.13.3';",'version')
+          once(
+            "geometryWorker:null,geometryWorkerSeq:0,geometryWorkerPending:new Map(),heavyPrepared:new Map(),heavyPrepareJobs:new Map(),answerGeometryCache:new Map(),geometrySqlAvailable:null,heavyCanvasRenderer:null",
+            "geometryWorker:null,geometryWorkerSeq:0,geometryWorkerPending:new Map(),heavyPrepared:new Map(),heavyPrepareJobs:new Map(),answerGeometryCache:new Map(),geometrySqlAvailable:null,heavyCanvasRenderer:null,geometryFallbackRetryAt:new Map()",
+            'state fallback map')
+          once(
+            "state.geometryCache=new Map();state.geometryJobs=new Map();state.geometryWarmScheduled=false;state.possibleAreaSignature=null;state.possibleAreaCache=new Map();state.possibleAreaKm2=0;state.possibleExcludedArea=null;state.possibleRenderSignature=null;state.heavyPrepared=new Map();state.heavyPrepareJobs=new Map();state.answerGeometryCache=new Map();state.geometrySqlAvailable=null;state.heavyCanvasRenderer=null;",
+            "state.geometryCache=new Map();state.geometryJobs=new Map();state.geometryWarmScheduled=false;state.possibleAreaSignature=null;state.possibleAreaCache=new Map();state.possibleAreaKm2=0;state.possibleExcludedArea=null;state.possibleRenderSignature=null;state.heavyPrepared=new Map();state.heavyPrepareJobs=new Map();state.answerGeometryCache=new Map();state.geometrySqlAvailable=null;state.heavyCanvasRenderer=null;state.geometryFallbackRetryAt=new Map();",
+            'entry reset')
+          once(
+            "    await syncServerClock(); await reloadGameState(); subscribeRealtime(); startTimers();",
+            "    await syncServerClock(); subscribeRealtime(); startTimers(); await reloadGameState();",
+            'startup order')
+          once(
+            "    if(!state.createStation){$('createStationStatus').className='status-box good';$('createStationStatus').textContent='Choose a station from the list or tap a station marker on the map.';}\n    renderCreateSelection();",
+            "    if(!state.createStation){$('createStationStatus').className='status-box good';$('createStationStatus').textContent='Choose a station from the list or tap a station marker on the map.';}\n    renderCreateSelection();\n    state.createMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});",
+            'create map reset')
+          once(
+            "      state.gameMap=L.map('gameMap',baseMapOptions());addBaseTiles(state.gameMap);state.gameMap.on('click',e=>handleGameMapClick(e.latlng));state.gameMap.on('moveend',saveGameMapView);",
+            "      state.gameMap=L.map('gameMap',baseMapOptions());addBaseTiles(state.gameMap);state.gameMap.on('click',e=>handleGameMapClick(e.latlng));",
+            'remove game map persistence binding')
+          once(
+            "    if(!restoreGameMapView())state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});\n    setTimeout(()=>{state.gameMap?.invalidateSize(false);if(!restoreGameMapView())state.gameMap?.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});},80);",
+            "    state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});\n    setTimeout(()=>{state.gameMap?.invalidateSize(false);state.gameMap?.fitBounds(L.geoJSON(state.mapData.city).getBounds(),{padding:[8,8],animate:false});},80);",
+            'always fit Vienna')
+          once(
+            "  async function reloadGameStateOnce(){\n    await reloadGamePublic();await reloadActions();processActionNotifications();\n    if(state.developerPreview&&state.role==='hider')await reloadDeveloperHiderPreview();\n    else {if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();}\n    deriveLocalState();await recomputePossibleArea();renderAll();scheduleHeavyGeometryWarmups();\n  }",
+            "  async function reloadGameStateOnce(){\n    await reloadGamePublic();await reloadActions();processActionNotifications();\n    if(state.developerPreview&&state.role==='hider')await reloadDeveloperHiderPreview();\n    else {if(state.role==='hider')await refreshHiderSecret();await reloadHiderPrivate();}\n    deriveLocalState();\n    if(!state.possibleArea){state.possibleArea=state.mapData.city;state.possibleAreaSignature=`boot:${state.game.id}`;state.possibleAreaKm2=turf.area(state.mapData.city)/1e6;state.possibleExcludedArea=null;}\n    renderAll();\n    try{await recomputePossibleArea();}catch(e){console.warn('Possible-area refresh failed; keeping the last rendered area.',e);}\n    renderAll();scheduleHeavyGeometryWarmups();\n  }",
+            'nonblocking initial render')
+          once(
+            "    const worker=ensureGeometryWorker(),id=`g${++state.geometryWorkerSeq}-${Date.now()}`;\n    return new Promise((resolve,reject)=>{\n      const timer=setTimeout(()=>{state.geometryWorkerPending.delete(id);reject(new Error(`Background geometry timed out (${op}).`));},timeoutMs);",
+            "    const worker=ensureGeometryWorker(),id=`g${++state.geometryWorkerSeq}-${Date.now()}`;\n    return new Promise((resolve,reject)=>{\n      const timer=setTimeout(()=>{\n        const err=new Error(`Background geometry timed out (${op}).`);\n        for(const pending of state.geometryWorkerPending?.values()||[]){clearTimeout(pending.timer);pending.reject(err);}state.geometryWorkerPending?.clear();\n        try{state.geometryWorker?.terminate();}catch(_){}state.geometryWorker=null;\n      },timeoutMs);",
+            'worker timeout recovery')
+
+          start=s.index('  async function resolveHeavyFinalGeometry(possible,q,answer,invert=false){')
+          end=s.index('  function ringPointDistanceM(',start)
+          replacement="""  async function resolveHeavyFinalGeometry(possible,q,answer,invert=false){
+    if(!possible||!q||!answer)return possible;const p=q.payload||{},expected=heavyDomainSignature(q);
+    if(!invert){const published=await loadPublishedAnswerGeometry(q,answer,expected);if(published)return published;}
+    const ansId=activeAnswerForQuestion(q.id)?.id||'answer',fallbackKey=`heavy-final:${q.id}:${ansId}:${hashGeometryText(expected)}:${invert?'i':'n'}`,cached=geometryCacheGet(fallbackKey);if(cached)return cached;
+    const retryAt=Number(state.geometryFallbackRetryAt?.get(fallbackKey)||0);if(Date.now()<retryAt)return possible;
+    if(!state.geometryJobs?.has(fallbackKey)){
+      const gameId=state.game?.id;
+      geometryJob(fallbackKey,async()=>{
+        if(p.question_kind==='same_line'){
+          const bundle=await runGeometryWorker('same_line_final',{domain:possible,line_refs:p.line_refs||[],radius_m:250,rail_lines:state.mapData?.railLines||[],stations:state.mapData?.stations||[]});
+          const value=answer?.type==='boolean'?(invert?!answer.value:!!answer.value):false;return value?bundle?.yes:bundle?.no;
+        }
+        if(p.question_kind==='tentacle'&&answer?.status==='poi'&&answer.poi)return runGeometryWorker('tentacle_final',{domain:possible,selected:answer.poi,pois:p.pois||[],invert:!!invert});
+        if(p.question_kind==='bus_line_tentacle'&&answer?.status==='line'&&answer.line_ref){
+          if(!(p.bus_features||[]).length){console.warn('Bus fallback geometry unavailable: source geometry is no longer present.');return possible;}
+          return runGeometryWorker('bus_final',{domain:possible,selected_ref:answer.line_ref,refs:p.candidate_line_refs||[],features:p.bus_features||[],grid_m:BUS_TENTACLE_GRID_M,invert:!!invert});
+        }
+        return possible;
+      }).then(result=>{
+        if(!result||state.game?.id!==gameId)return;
+        state.geometryFallbackRetryAt?.delete(fallbackKey);state.possibleAreaSignature=null;
+        recomputePossibleArea().then(()=>{renderPossibleArea();renderActivity();}).catch(e=>console.warn('Deferred geometry apply failed',e));
+      }).catch(e=>{state.geometryFallbackRetryAt?.set(fallbackKey,Date.now()+5*60*1000);console.warn('Deferred heavy geometry failed',e);});
+    }
+    return possible;
+  }
+"""
+          s=s[:start]+replacement+s[end:]
+          once(
+            "  function scheduleExcludedGeometry(signature,possible){\n    if(!possible||!signature)return;const key=excludedGeometryKey(signature),cached=geometryCacheGet(key);",
+            "  function scheduleExcludedGeometry(signature,possible){\n    if(!possible||!signature||possible===state.mapData?.city||String(signature).startsWith('boot:'))return;const key=excludedGeometryKey(signature),cached=geometryCacheGet(key);",
+            'skip full-city exclusion')
+          p.write_text(s)
+
+          w=Path('geometry-worker.js'); ws=w.read_text()
+          start=ws.index('function sameLineFinal(payload){')
+          end=ws.index('function closerHalfPlane(',start)
+          same="""function bboxOverlap(a,b){return !!a&&!!b&&a[2]>=b[0]&&a[0]<=b[2]&&a[3]>=b[1]&&a[1]<=b[3];}
+function simplifyRoute(f){try{return turf.simplify(f,{tolerance:0.00005,highQuality:false,mutate:false})||f;}catch(_){return f;}}
+function sameLineFinal(payload){
+  const domain=optimize(payload.domain,0.000025,2.5),refs=(payload.line_refs||[]).map(r=>String(r).toUpperCase()),radiusM=Number(payload.radius_m||250);
+  if(!domain || !refs.length) return {yes:domain||null,no:domain||null};
+  const rails=(payload.rail_lines||[]).map(simplifyRoute),selectedSet=new Set(refs),selectedFeatures=matchingRouteFeatures(rails,refs);
+  let corridor=unionList(selectedFeatures.map(f=>{try{return turf.buffer(f,radiusM/1000,{units:'kilometers',steps:8});}catch(_){return null;}}));
+  corridor=optimize(corridor,0.000025,2.5);if(!corridor)return {yes:domain,no:domain};
+  const stationParts=[];
+  for(const f of payload.stations||[]){const lineRefs=[...new Set((f.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()).filter(r=>/^[US]\\d+/i.test(r)))];if(lineRefs.length<2||!lineRefs.some(r=>selectedSet.has(r)))continue;try{stationParts.push(turf.buffer(f,radiusM/1000,{units:'kilometers',steps:12}));}catch(_){}}
+  let preserve=unionList(stationParts),search=corridor;try{search=turf.buffer(corridor,radiusM/1000,{units:'kilometers',steps:8});}catch(_){}
+  let searchBox=null;try{searchBox=turf.bbox(search);}catch(_){}
+  const overlaps=[];
+  for(const f of rails){
+    const routeRefs=(f.properties?.routeRefs||[]).map(r=>String(r).toUpperCase());if(!routeRefs.some(r=>!selectedSet.has(r)))continue;
+    try{if(searchBox&&!bboxOverlap(turf.bbox(f),searchBox))continue;if(!turf.booleanIntersects(f,search))continue;const b=turf.buffer(f,radiusM/1000,{units:'kilometers',steps:8}),overlap=intersect2(b,corridor);if(overlap)overlaps.push(overlap);}catch(_){}
+  }
+  preserve=optimize(unionList([preserve,...overlaps]),0.000025,2.5);
+  const exclusive=preserve?difference2(corridor,preserve):corridor;
+  const yes=intersect2(domain,corridor)||domain,no=exclusive?(difference2(domain,exclusive)||domain):domain;
+  return {yes:optimize(yes,0.000025,2.5),no:optimize(no,0.000025,2.5)};
+}
+
+"""
+          ws=ws[:start]+same+ws[end:]
+          old="function differenceOptimized(payload){ return optimize(difference2(payload.a,payload.b),Number(payload.tolerance||0.000035),Number(payload.min_vertex_m||3)); }"
+          new="function differenceOptimized(payload){const t=Number(payload.tolerance||0.000035),m=Number(payload.min_vertex_m||3),a=optimize(payload.a,t*0.75,m),b=optimize(payload.b,t*0.75,m);return optimize(difference2(a,b),t,m); }"
+          if ws.count(old)!=1: raise SystemExit('difference optimized anchor mismatch')
+          w.write_text(ws.replace(old,new,1))
+
+          i=Path('index.html'); ix=i.read_text()
+          if ix.count('app.js?v=3.13.2')!=1:raise SystemExit('index app version mismatch')
+          ix=ix.replace('app.js?v=3.13.2','app.js?v=3.13.3')
+          ix=ix.replace('BUILD 3.13.2','BUILD 3.13.3')
+          i.write_text(ix)
+          PY
+      - name: Validate
+        run: |
+          node --check app.js
+          node --check geometry-worker.js
+          grep -F "const APP_VERSION = '3.13.3';" app.js
+          grep -F "subscribeRealtime(); startTimers(); await reloadGameState();" app.js
+          grep -F "possible===state.mapData?.city" app.js
+          grep -F "state.gameMap.fitBounds(L.geoJSON(state.mapData.city).getBounds()" app.js
+          if grep -Fq "state.gameMap.on('moveend',saveGameMapView)" app.js; then echo 'map persistence still bound'; exit 1; fi
+          git diff --check
+      - name: Commit generated hotfix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add app.js geometry-worker.js index.html
+          git commit -m "v3.13.3: unblock game startup and reset map view"
+          git push origin HEAD:hotfix/v3.13.3-startup-geometry
