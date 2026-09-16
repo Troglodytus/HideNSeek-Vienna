@@ -70,9 +70,14 @@
     'spittelau':['U4','U6']
   };
   function stationOverrideKey(name){return String(name||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/ß/g,'ss').toLowerCase().replace(/\s+/g,' ').trim();}
+  function manualStationOverrideRefs(name){
+    const key=stationOverrideKey(name);if(MANUAL_STATION_LINE_OVERRIDES[key])return MANUAL_STATION_LINE_OVERRIDES[key];
+    for(const [base,refs] of Object.entries(MANUAL_STATION_LINE_OVERRIDES))if(key.startsWith(base+',')||key.startsWith(base+' '))return refs;
+    return [];
+  }
   function applyManualStationLineOverrides(stations){
     return (stations||[]).map(st=>{
-      const extra=MANUAL_STATION_LINE_OVERRIDES[stationOverrideKey(st?.properties?.stationName)]||[];if(!extra.length)return st;
+      const extra=manualStationOverrideRefs(st?.properties?.stationName);if(!extra.length)return st;
       const refs=[...new Set([...(st.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()),...extra])].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
       return {...st,properties:{...(st.properties||{}),lineRefs:refs,manualInterchangeOverride:true}};
     });
@@ -2452,16 +2457,14 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     const {error}=await state.supabase.rpc('set_hider_vor_live_position_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_lat:Number(p.lat),p_lng:Number(p.lng),p_accuracy_m:p.accuracy_m??null});if(error)throw error;
   }
   function startVorTracking(q){
-    if(!q||!['seeker','hider'].includes(state.role))return;
+    if(state.developerPreview||!q||!['seeker','hider'].includes(state.role))return;
     if(state.vorGeoWatchId===null&&navigator.geolocation){state.vorGeoWatchId=navigator.geolocation.watchPosition(pos=>{
       const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false});
       if(state.role==='seeker')publishSeekerLivePosition(p).then(()=>requestVorBearing(q,{force:true})).catch(e=>console.warn('VOR live Seeker GPS publish failed',e));
       else publishHiderVorLivePosition(q,p).catch(e=>console.warn('VOR private Hider GPS publish failed',e));
     },e=>console.warn('VOR live GPS unavailable',e),{enableHighAccuracy:true,maximumAge:500,timeout:10000});}
-    if(state.role==='seeker'){
-      if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
-      if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
-    }
+    if(state.role==='seeker'&&typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
+    if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
   }
   function stopVorTracking(){
     if(state.vorGeoWatchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(state.vorGeoWatchId);}catch(_){}}state.vorGeoWatchId=null;
