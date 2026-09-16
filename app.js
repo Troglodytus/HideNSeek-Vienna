@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.13.3';
+  const APP_VERSION = '3.13.4';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -56,6 +56,27 @@
     {name:'Zemlinskygasse / Willergasse',route:'Mauer',lat:48.13961,lng:16.25753}
   ];
   const MANUAL_CURSE_EFFECTS=new Set(['fiaker','schwarzkappler','wean_ned_schlecht_redn']);
+  const MANUAL_STATION_LINE_OVERRIDES={
+    'karlsplatz':['U1','U2','U4'],
+    'stephansplatz':['U1','U3'],
+    'westbahnhof':['U3','U6'],
+    'volkstheater':['U2','U3'],
+    'landstrasse':['U3','U4'],
+    'wien mitte':['U3','U4'],
+    'schottenring':['U2','U4'],
+    'schwedenplatz':['U1','U4'],
+    'langenfeldgasse':['U4','U6'],
+    'praterstern':['U1','U2'],
+    'spittelau':['U4','U6']
+  };
+  function stationOverrideKey(name){return String(name||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').replace(/ß/g,'ss').toLowerCase().replace(/\s+/g,' ').trim();}
+  function applyManualStationLineOverrides(stations){
+    return (stations||[]).map(st=>{
+      const extra=MANUAL_STATION_LINE_OVERRIDES[stationOverrideKey(st?.properties?.stationName)]||[];if(!extra.length)return st;
+      const refs=[...new Set([...(st.properties?.lineRefs||[]).map(r=>String(r).toUpperCase()),...extra])].sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+      return {...st,properties:{...(st.properties||{}),lineRefs:refs,manualInterchangeOverride:true}};
+    });
+  }
 
   const DEFAULT_QUESTION_CARDS = [
     { slot:'same-district', category:'MIXED', title:'Same District', detail:'Same Vienna district?', kind:'district' },
@@ -437,7 +458,7 @@
     const railLines=normalizeOfficialTransitLines(lineGeo);
     const stations=normalizeOfficialStations(ubahnStops,allStops,railLines,city);
     if(stations.length<20)throw new Error(`Vienna official transport data produced only ${stations.length} U-/S-Bahn stations.`);
-    return {stations,railLines};
+    return {stations:applyManualStationLineOverrides(stations),railLines};
   }
   function featureToPoi(feature,type,i){
     const pt=pointFromFeature(feature);if(!pt)return null;
@@ -512,7 +533,7 @@
       referenceDataset(REF_ADMIN_KEY),referenceDataset(REF_STATIONS_KEY),referenceDataset(REF_TRANSIT_KEY)
     ]);
     if(!validateReferenceCore(admin,stations))return false;
-    state.mapData={city:admin.city,districts:admin.districts,stations:stations.stations,railLines:Array.isArray(transit?.railLines)?transit.railLines:[]};
+    state.mapData={city:admin.city,districts:admin.districts,stations:applyManualStationLineOverrides(stations.stations),railLines:Array.isArray(transit?.railLines)?transit.railLines:[]};
     if(!state.mapData.railLines.length)setTimeout(()=>loadRailLinesInBackground(false),0);
     return true;
   }
@@ -1576,16 +1597,47 @@ This does not consume a Veto card and awards no card draw. If the Hider is outsi
     if(state.role!=='hider'||!state.secret?.endgame||!state.secret?.hidden)throw new Error('Current Street Shape requires the Hider Endgame location.');
     const [lng,lat]=state.secret.hidden.geometry.coordinates;
     const queries=[
-      `[out:json][timeout:15];way(around:220,${lat},${lng})["highway"]["name"];out geom tags qt;`,
-      `[out:json][timeout:15];way(around:220,${lat},${lng})["highway"];out geom tags qt;`
+      `[out:json][timeout:15];way(around:240,${lat},${lng})["highway"]["name"];out geom tags qt;`,
+      `[out:json][timeout:15];way(around:240,${lat},${lng})["highway"];out geom tags qt;`
     ];
     let osm=null;for(const q of queries){try{osm=await fetchOverpass(q,'Nearest street',22000);if((osm.elements||[]).length)break;}catch(e){console.warn('Street-shape query failed',e);}}
-    const target=turf.point([lng,lat]);let best=null,bestD=Infinity;
-    for(const e of osm?.elements||[]){const coords=(e.geometry||[]).map(g=>[Number(g.lon),Number(g.lat)]).filter(c=>Number.isFinite(c[0])&&Number.isFinite(c[1]));if(coords.length<2)continue;try{const line=turf.lineString(coords),d=turf.pointToLineDistance(target,line,{units:'meters'});if(d<bestD){bestD=d;best={id:e.id,name:e.tags?.name||null,coords};}}catch(_){}}
+    const target=turf.point([lng,lat]),nameKey=n=>String(n||'').toLocaleLowerCase('de-AT').replace(/\s+/g,' ').trim();
+    const ways=[];
+    for(const e of osm?.elements||[]){
+      const coords=(e.geometry||[]).map(g=>[Number(g.lon),Number(g.lat)]).filter(c=>Number.isFinite(c[0])&&Number.isFinite(c[1]));
+      if(coords.length<2)continue;ways.push({id:e.id,name:e.tags?.name||null,name_key:nameKey(e.tags?.name),highway:e.tags?.highway||null,coords});
+    }
+    const segments=[];let best=null,bestD=Infinity;
+    for(const way of ways){for(let i=0;i<way.coords.length-1;i++){
+      const a=way.coords[i],b=way.coords[i+1];let d=Infinity;try{d=turf.pointToLineDistance(target,turf.lineString([a,b]),{units:'meters'});}catch(_){}
+      const seg={way,i,a,b,d};segments.push(seg);if(d<bestD){bestD=d;best=seg;}
+    }}
     if(!best)throw new Error('No nearby street geometry could be loaded.');
-    const ds=best.coords.map(c=>turf.distance(target,turf.point(c),{units:'meters'})),inside=ds.map((d,i)=>d<=220?i:-1).filter(i=>i>=0);let lo,hi;
-    if(inside.length){lo=Math.max(0,Math.min(...inside)-1);hi=Math.min(best.coords.length-1,Math.max(...inside)+1);}else{let k=0;for(let i=1;i<ds.length;i++)if(ds[i]<ds[k])k=i;lo=Math.max(0,k-3);hi=Math.min(best.coords.length-1,k+3);}
-    const coords=best.coords.slice(lo,hi+1);if(coords.length<2)throw new Error('Nearby street geometry is too short.');return {...best,coords,distance_m:bestD};
+
+    const sameStreet=(seg)=>seg&&((best.way.name_key&&seg.way.name_key===best.way.name_key)||(!best.way.name_key&&seg.way.id===best.way.id));
+    const endpointDistance=(a,b)=>{try{return turf.distance(turf.point(a),turf.point(b),{units:'meters'});}catch(_){return Infinity;}};
+    const connectedOuterPoint=(endpoint,side)=>{
+      let candidate=null,candidateD=12;
+      for(const seg of segments){
+        if(seg===best||!sameStreet(seg))continue;
+        if(seg.way.id===best.way.id&&(seg.i===best.i-1||seg.i===best.i+1))continue;
+        const da=endpointDistance(endpoint,seg.a),db=endpointDistance(endpoint,seg.b),d=Math.min(da,db);if(d>candidateD)continue;
+        const outer=da<=db?seg.b:seg.a;
+        // Never accidentally add the exact opposite side of our selected segment.
+        if(endpointDistance(outer,side==='before'?best.b:best.a)<0.5)continue;
+        candidate={outer,d};candidateD=d;
+      }
+      return candidate?.outer||null;
+    };
+
+    const coords=[[...best.a],[...best.b]];
+    // Prefer the adjacent segment from the same OSM way. If the way is split at an
+    // intersection, bridge only to another way carrying the same street name.
+    if(best.i>0)coords.unshift([...best.way.coords[best.i-1]]);
+    else{const p=connectedOuterPoint(best.a,'before');if(p)coords.unshift([...p]);}
+    if(best.i+2<best.way.coords.length)coords.push([...best.way.coords[best.i+2]]);
+    else{const p=connectedOuterPoint(best.b,'after');if(p)coords.push([...p]);}
+    return {id:best.way.id,name:best.way.name,highway:best.way.highway,coords,distance_m:bestD,segment_index:best.i};
   }
   function streetShapeBlob(street){
     const canvas=document.createElement('canvas');canvas.width=600;canvas.height=600;const ctx=canvas.getContext('2d');ctx.fillStyle='#fff';ctx.fillRect(0,0,600,600);
@@ -1839,8 +1891,9 @@ This becomes the new secret station. Previous deductions and Endgame reset; Pros
   }
 
   async function useSameDayDelivery(card){
-    const costKeys=await chooseCastingCost({...card,cast_cost_kind:'time',cast_cost_minutes:15});if(costKeys===null)return;
-    const ok=await confirmAction('Same Day Delivery?',`Spend at least 15 minutes of time bonuses.\n\nDraw 3 cards immediately and keep 2.`,`Order now`);if(!ok)return;
+    const drawCount=Math.max(1,Math.min(10,Number(card.draw_count||3))),keepLimit=Math.max(1,Math.min(drawCount,Number(card.keep_limit||2)));
+    const costKeys=await chooseCastingCost(card);if(costKeys===null)return;const cost=cardCostLabel(card);
+    const ok=await confirmAction(`${card.title||'Delivery'}?`,`${cost?`Casting cost: ${cost}\n\n`:''}Draw ${drawCount} cards immediately and keep ${keepLimit}.`,`Draw cards`);if(!ok)return;
     const {error}=await state.supabase.rpc('use_same_day_delivery_v1',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_cost_card_keys:costKeys||[]});if(error)throw error;
     await reloadGameState();
   }
@@ -2394,11 +2447,21 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(!q||state.role!=='seeker'||state.vorBearingBusy)return;const now=Date.now();if(!force&&now-state.vorLastBearingFetch<1000)return;state.vorLastBearingFetch=now;state.vorBearingBusy=true;
     try{const {data,error}=await state.supabase.rpc('get_vor_navigation_bearing_v1',{p_game_id:state.game.id,p_question_action_id:q.id});if(error)throw error;const row=Array.isArray(data)?data[0]:data;if(row&&Number.isFinite(Number(row.bearing_deg))){state.vorBearing=normalizeDegrees(Number(row.bearing_deg));state.vorExpiresAt=new Date(row.expires_at).getTime();}}catch(e){console.warn('VOR bearing refresh failed',e);}finally{state.vorBearingBusy=false;}
   }
+  async function publishHiderVorLivePosition(q,p){
+    if(state.role!=='hider'||!state.hiderPassword||!state.game||!q||!p)return;
+    const {error}=await state.supabase.rpc('set_hider_vor_live_position_v1',{p_game_id:state.game.id,p_question_action_id:q.id,p_password:state.hiderPassword,p_lat:Number(p.lat),p_lng:Number(p.lng),p_accuracy_m:p.accuracy_m??null});if(error)throw error;
+  }
   function startVorTracking(q){
-    if(state.role!=='seeker'||!q)return;
-    if(state.vorGeoWatchId===null&&navigator.geolocation){state.vorGeoWatchId=navigator.geolocation.watchPosition(pos=>{const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false});publishSeekerLivePosition(p).then(()=>requestVorBearing(q,{force:true})).catch(e=>console.warn('VOR live GPS publish failed',e));},e=>console.warn('VOR live GPS unavailable',e),{enableHighAccuracy:true,maximumAge:1000,timeout:10000});}
-    if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
-    if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
+    if(!q||!['seeker','hider'].includes(state.role))return;
+    if(state.vorGeoWatchId===null&&navigator.geolocation){state.vorGeoWatchId=navigator.geolocation.watchPosition(pos=>{
+      const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false});
+      if(state.role==='seeker')publishSeekerLivePosition(p).then(()=>requestVorBearing(q,{force:true})).catch(e=>console.warn('VOR live Seeker GPS publish failed',e));
+      else publishHiderVorLivePosition(q,p).catch(e=>console.warn('VOR private Hider GPS publish failed',e));
+    },e=>console.warn('VOR live GPS unavailable',e),{enableHighAccuracy:true,maximumAge:500,timeout:10000});}
+    if(state.role==='seeker'){
+      if(typeof DeviceOrientationEvent!=='undefined'&&typeof DeviceOrientationEvent.requestPermission!=='function'&&!state.vorOrientationHandler)attachVorOrientation();
+      if(!state.vorRenderTimer)state.vorRenderTimer=setInterval(()=>renderVorNavigation(),1000);
+    }
   }
   function stopVorTracking(){
     if(state.vorGeoWatchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(state.vorGeoWatchId);}catch(_){}}state.vorGeoWatchId=null;
@@ -2406,9 +2469,12 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     if(state.vorRenderTimer)clearInterval(state.vorRenderTimer);state.vorRenderTimer=null;state.vorQuestionId=null;state.vorBearing=null;state.vorHeading=null;state.vorExpiresAt=0;state.vorLastBearingFetch=0;state.vorBearingBusy=false;
   }
   function renderVorNavigation(){
-    const panel=$('vorNavigationPanel');if(!panel)return;const active=state.role==='seeker'?activeVorNavigation():null;
+    const panel=$('vorNavigationPanel');if(!panel)return;const active=['seeker','hider'].includes(state.role)?activeVorNavigation():null;
     if(!active){panel.classList.add('hidden');if(state.vorQuestionId)stopVorTracking();return;}
-    panel.classList.remove('hidden');state.vorQuestionId=active.question.id;state.vorExpiresAt=active.expiry;startVorTracking(active.question);requestVorBearing(active.question).catch(()=>{});
+    state.vorQuestionId=active.question.id;state.vorExpiresAt=active.expiry;startVorTracking(active.question);
+    if(state.role==='hider'){panel.classList.add('hidden');return;}
+    if(state.role!=='seeker'){panel.classList.add('hidden');return;}
+    panel.classList.remove('hidden');requestVorBearing(active.question).catch(()=>{});
     const timer=$('vorNavigationTimer');if(timer)timer.textContent=formatCountdown(Math.max(0,Math.ceil((active.expiry-serverNowMs())/1000)));
     const sector=$('vorSector'),north=$('vorNorthRing'),status=$('vorNavigationStatus'),button=$('vorCompassButton'),heading=Number.isFinite(state.vorHeading)?state.vorHeading:null,bearing=Number.isFinite(state.vorBearing)?state.vorBearing:null;
     if(button&&!button.dataset.bound){button.dataset.bound='1';button.addEventListener('click',()=>enableVorCompass());}
@@ -2424,7 +2490,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   function questionLabel(q){const p=q.payload||{};if(p.question_kind==='radar')return `${formatDistance(p.radius_m)} Radar from ${formatCoord(p.center)}`;if(p.question_kind==='district')return `Same District: ${p.district_number}. ${p.district_name}`;if(p.question_kind==='same_line')return `Line: ${p.selected_line||(p.line_refs||[]).join(', ')}`;if(p.question_kind==='station_interchange')return 'Nearest Station an Interchange?';if(p.question_kind==='bus_line_tentacle')return 'Nearest Bus Line';if(p.question_kind==='vor_navigation')return 'VOR Navigation';if(p.question_kind==='district_set')return p.title||'District group';if(p.question_kind==='landmark_compare')return p.title||'Landmark comparison';if(p.question_kind==='street_shape')return 'Current Street Shape';if(p.question_kind==='directional')return p.title||'Direction';if(p.question_kind==='thermometer')return `${formatDistance(p.min_travel_m)} Thermometer: ${formatCoord(p.from)} → ${formatCoord(p.to)}`;if(p.question_kind==='tentacle')return `${humanize(p.poi_type)} Tentacle · ${p.pois?.length||0} POIs within 5 km`;if(p.question_kind==='photo')return `Photo · ${p.photo_prompt||p.title||'Photo'}`;return p.title||p.slot_key||'Question';}
   function answerLabel(ans){if(!ans)return'';if(ans.type==='boolean')return ans.value?'YES':'NO';if(ans.type==='tentacle'&&ans.status==='poi')return `Hider is closest to ${ans.poi?.name||'selected POI'}`;if(ans.type==='bus_line_tentacle'&&ans.status==='line')return `Closest to bus ${ans.line_ref||'?'}`;if(ans.type==='vor_navigation')return '3 min VOR signal';if(ans.type==='photo')return 'PHOTO';return 'ANSWER';}
   function actionLabel(a){const p=a.payload||{};if(a.kind==='question')return `Question · ${questionLabel(a)}`;if(a.kind==='answer'){const q=state.actions.find(x=>x.id===a.parent_id);return `Answer · ${q?questionLabel(q):'question'} · ${answerLabel(p.answer)}`;}if(a.kind==='thermo_reference')return `Thermometer start · ${Number(p.lat).toFixed(4)}, ${Number(p.lng).toFixed(4)}`;if(a.kind==='curse_play'&&p.effect_key==='deceptive_tiny_house'&&p.revealed_at_endgame)return 'Curse revealed · Deceptive Tiny House';if(a.kind==='curse_play')return `Card played · ${p.title||p.card_key||'Curse'}`;if(a.kind==='question_veto')return `${p.automatic_tentacle?'Automatic Tentacle veto':'Veto'} · ${p.question_title||'Question'}`;if(a.kind==='time_trap_place')return `Time Trap placed · ${p.station_name||'Station'}`;if(a.kind==='time_trap_trigger')return `Time Trap triggered · ${p.station_name} · +${p.bonus_minutes} min`;if(a.kind==='game_finish')return `Hider Found · final ${formatCountdown(Number(p.final_seconds||0))}`;if(a.kind==='turntables_relocate')return 'Turntables · new hiding station selected';
-    if(a.kind==='powerup_draw'&&p.effect_key==='same_day_delivery')return 'Same Day Delivery · drew 3 cards, keep 2';
+    if(a.kind==='powerup_draw'&&p.effect_key==='same_day_delivery')return `${p.title||'Delivery'} · drew ${Number(p.draw_count||3)} cards, keep ${Number(p.keep_limit||2)}`;
     if(a.kind==='powerup_play'&&p.effect_key==='ma48')return `MA48 · Hider hand: ${(p.hand_snapshot||[]).join(', ')||'(empty)'}`;
     if(a.kind==='powerup_play'&&p.effect_key==='kleingedrucktes')return `Kleingedrucktes · ${p.target_title||'Curse'} · ${p.secondary_effect_text||p.secondary_engine_key||'secondary effect revealed'}`;
     if(a.kind==='powerup_play')return p.title||'Power-up played';return a.kind;}
@@ -2682,9 +2748,12 @@ ${failures.join('\n')}`,9000);
     const vals=[];for(let n=0;n<=20;n++)vals.push(n);vals.push(25,30,40,50);
     return vals.map(n=>`<option value="${n}" ${Number(selected??1)===n?'selected':''}>${n}</option>`).join('');
   }
+  function drawKeepCountOptions(selected){
+    const n=Math.max(1,Math.min(10,Number(selected||1)));return Array.from({length:10},(_,i)=>i+1).map(v=>`<option value="${v}" ${n===v?'selected':''}>${v}</option>`).join('');
+  }
   function developerCardHtml(c={},isNew=false){
     const costKind=c.cast_cost_kind||((Number(c.cast_cost_minutes||0)>0)?'time':'none'),secMode=c.secondary_effect_mode||'none';
-    const key=c.card_key||'',isCurse=isNew||(c.card_kind||'curse')==='curse',special=!!c.special_engine;
+    const key=c.card_key||'',isCurse=isNew||(c.card_kind||'curse')==='curse',special=!!c.special_engine,isDrawKeep=c.effect_key==='same_day_delivery';
     return `<div class="developer-card ${Number(c.deck_count??1)===0?'disabled':''}" data-developer-card="${escapeHtml(key)}" data-new-card="${isNew?'true':'false'}" data-special-card="${special?'true':'false'}">
       <div class="card-key">${isNew?'New card · key created on save':escapeHtml(key)}${special?' · engine effect: '+escapeHtml(c.effect_key||''):''}</div>
       <div class="developer-card-grid">
@@ -2692,9 +2761,10 @@ ${failures.join('\n')}`,9000);
         <label>Type<select class="dev-card-kind" disabled><option value="curse" ${(c.card_kind||'curse')==='curse'?'selected':''}>Curse</option><option value="powerup" ${c.card_kind==='powerup'?'selected':''}>Power-up</option><option value="time_bonus" ${c.card_kind==='time_bonus'?'selected':''}>Time bonus</option><option value="time_trap" ${c.card_kind==='time_trap'?'selected':''}>Time trap</option></select></label>
         <label>Duration<select class="dev-card-duration">${durationOptions(c.duration_seconds)}</select></label>
         <label>Copies<select class="dev-card-count card-count-select">${deckCountOptions(c.deck_count??1)}</select></label>
+        ${isDrawKeep?`<label>Cards drawn<select class="dev-card-draw-count">${drawKeepCountOptions(c.draw_count||3)}</select></label><label>Cards kept<select class="dev-card-keep-limit">${drawKeepCountOptions(c.keep_limit||2)}</select></label>`:''}
       </div>
       <label>Card text<textarea class="dev-card-description" maxlength="1200">${escapeHtml(c.description||'')}</textarea></label>
-      <div class="card-cost-row ${isCurse?'':'hidden'}">
+      <div class="card-cost-row ${isCurse||isDrawKeep?'':'hidden'}">
         <label>Casting cost<select class="dev-card-cost-kind"><option value="none" ${costKind==='none'?'selected':''}>None</option><option value="time" ${costKind==='time'?'selected':''}>Time bonus</option><option value="discard_any" ${costKind==='discard_any'?'selected':''}>Discard any other card</option><option value="discard_category" ${costKind==='discard_category'?'selected':''}>Discard card by category</option><option value="custom" ${costKind==='custom'?'selected':''}>Custom / physical</option></select></label>
         <label class="card-cost-minutes ${costKind==='time'?'':'hidden'}">Minutes<select class="dev-card-cost-minutes">${minuteCostOptions(c.cast_cost_minutes||5)}</select></label>
         <label class="card-cost-category ${costKind==='discard_category'?'':'hidden'}">Card category<select class="dev-card-cost-category"><option value="curse" ${c.cast_cost_category==='curse'?'selected':''}>Curse</option><option value="veto" ${c.cast_cost_category==='veto'?'selected':''}>Veto</option><option value="time_bonus" ${c.cast_cost_category==='time_bonus'?'selected':''}>Time bonus</option><option value="powerup" ${c.cast_cost_category==='powerup'?'selected':''}>Power-up</option><option value="time_trap" ${c.cast_cost_category==='time_trap'?'selected':''}>Time Trap</option></select></label>
@@ -2730,7 +2800,7 @@ ${failures.join('\n')}`,9000);
   }
   async function adminSaveCard(row){
     const isNew=row.dataset.newCard==='true',costKind=row.querySelector('.dev-card-cost-kind')?.value||'none';
-    const old=state.developerCards.find(c=>c.card_key===row.dataset.developerCard);
+    const old=state.developerCards.find(c=>c.card_key===row.dataset.developerCard),isDrawKeep=old?.effect_key==='same_day_delivery';
     const secMode=row.querySelector('.dev-card-secondary-mode')?.value||'none';let secPayload={};
     if(secMode==='engine'){try{secPayload=JSON.parse(row.querySelector('.dev-card-secondary-payload')?.value||'{}');if(!secPayload||Array.isArray(secPayload)||typeof secPayload!=='object')throw new Error();}catch(_){return toast('Secondary engine config must be a JSON object.');}}
     const args={
@@ -2743,12 +2813,13 @@ ${failures.join('\n')}`,9000);
       p_cast_cost_text:costKind==='custom'?row.querySelector('.dev-card-cost-text').value.trim():null,
       p_cast_cost_category:costKind==='discard_category'?row.querySelector('.dev-card-cost-category').value:null,
       p_deck_count:Number(row.querySelector('.dev-card-count').value),
+      p_draw_count:isDrawKeep?Number(row.querySelector('.dev-card-draw-count')?.value||3):null,p_keep_limit:isDrawKeep?Number(row.querySelector('.dev-card-keep-limit')?.value||2):null,
       p_secondary_effect_mode:secMode,p_secondary_effect_text:secMode==='none'?null:(row.querySelector('.dev-card-secondary-text')?.value.trim()||null),
       p_secondary_engine_key:secMode==='engine'?(row.querySelector('.dev-card-secondary-key')?.value.trim()||null):null,
       p_secondary_engine_payload:secMode==='engine'?secPayload:{}
     };
     const ok=await confirmAction(isNew?'Add this card?':'Save card changes?',`${args.p_title}\nCopies: ${args.p_deck_count}\n\n${args.p_description}`,'Save');if(!ok)return;
-    const {error}=await state.supabase.rpc('admin_save_card_v4',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
+    const {error}=await state.supabase.rpc('admin_save_card_v5',args);if(error)throw error;await loadDeveloperDashboard();showDeveloperTab('cards');
   }
   async function adminDeleteCard(row){
     const key=row.dataset.developerCard,title=row.querySelector('.dev-card-title').value.trim();
@@ -2859,7 +2930,7 @@ ${failures.join('\n')}`,9000);
     const [gamesRes,refsRes,cardsRes,questionsRes]=await Promise.all([
       state.supabase.rpc('admin_list_games_v1',{p_password:state.developerPassword}),
       state.supabase.from('reference_datasets').select('dataset_key,source,content_hash,updated_at,checked_at').order('dataset_key'),
-      state.supabase.rpc('admin_list_cards_v4',{p_password:state.developerPassword}),
+      state.supabase.rpc('admin_list_cards_v5',{p_password:state.developerPassword}),
       state.supabase.rpc('admin_list_questions_v1',{p_password:state.developerPassword})
     ]);
     if(gamesRes.error)throw gamesRes.error;if(refsRes.error)throw refsRes.error;if(cardsRes.error)throw cardsRes.error;if(questionsRes.error)throw questionsRes.error;
