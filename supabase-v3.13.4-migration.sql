@@ -68,7 +68,7 @@ begin
   v_expires:=(v_answer->>'expires_at')::timestamptz;
   if v_expires is null or now()>=v_expires then return;end if;
 
-  select lat,lng into v_seeker_lat,v_seeker_lng from public.seeker_live_positions where game_id=p_game_id;
+  select lat,lng into v_seeker_lat,v_seeker_lng from public.seeker_live_positions where game_id=p_game_id and updated_at>=now()-interval '20 seconds';
   if v_seeker_lat is null or v_seeker_lng is null then
     v_seeker_lat:=nullif(v_q.payload#>>'{origin,lat}','')::double precision;
     v_seeker_lng:=nullif(v_q.payload#>>'{origin,lng}','')::double precision;
