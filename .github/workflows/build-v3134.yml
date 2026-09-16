@@ -14,7 +14,17 @@ jobs:
           fetch-depth: 0
           ref: feature/v3.13.4-vor-cards-street-interchanges
       - name: Apply targeted patch
-        run: python3 .github/v3134-patch.py
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('.github/v3134-patch.py')
+          s=p.read_text()
+          old="s2,n=re.subn(pattern,repl,s,count=1,flags=flags)"
+          new="s2,n=re.subn(pattern,lambda _m: repl,s,count=1,flags=flags)"
+          if old not in s: raise SystemExit('sub_once implementation not found')
+          p.write_text(s.replace(old,new,1))
+          PY
+          python3 .github/v3134-patch.py
       - name: Validate JavaScript
         run: node --check app.js
       - name: Validate scoped invariants
@@ -28,7 +38,7 @@ jobs:
           grep -F "admin_list_cards_v5" app.js
           grep -F "admin_save_card_v5" app.js
           grep -F "dev-card-draw-count" app.js
-          grep -F "draw ${drawCount} cards immediately" app.js || true
+          grep -F "Draw ${drawCount} cards immediately" app.js || true
           grep -F "create table if not exists public.hider_vor_live_positions" supabase-v3.13.4-migration.sql
           grep -F "Economy Delivery" supabase-v3.13.4-migration.sql
           grep -F "Kleingedrucktes: Until a Fiaker is spotted" supabase-v3.13.4-migration.sql
@@ -39,11 +49,12 @@ jobs:
       - name: Confirm production diff scope
         run: |
           git diff --stat HEAD -- app.js index.html
-          if git diff --name-only HEAD | grep -Ev '^(app.js|index.html)$'; then echo 'Unexpected generated file'; exit 1; fi
+          if git diff --name-only HEAD | grep -Ev '^(app.js|index.html|.github/v3134-patch.py)$'; then echo 'Unexpected generated file'; exit 1; fi
       - name: Commit generated files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -- .github/v3134-patch.py
           git add app.js index.html
           git commit -m "v3.13.4: live VOR and targeted gameplay refinements"
           git push origin HEAD:feature/v3.13.4-vor-cards-street-interchanges
