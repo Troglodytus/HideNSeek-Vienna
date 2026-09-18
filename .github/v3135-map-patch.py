@@ -469,5 +469,5 @@ end;$$;
 grant execute on function public.admin_delete_map_item_v1(text,uuid) to anon,authenticated;
 '''
 if 'create table if not exists public.map_manual_items' in q: raise SystemExit('map SQL already present')
-q=q.rstrip()+map_sql+'\n'
+q=q.rstrip()+map_sql.rstrip()+'\n'
 SQL.write_text(q)
