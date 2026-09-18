@@ -247,14 +247,19 @@ begin
   if v_player is not null then
     select lat,lng into v_seeker_lat,v_seeker_lng from public.seeker_player_positions
       where game_id=p_game_id and player_id=v_player and updated_at>=now()-interval '20 seconds';
-  end if;
-  if v_seeker_lat is null or v_seeker_lng is null then
+    -- An identified VOR question may fall back only to its own asking origin,
+    -- never to the legacy row which might currently belong to another Seeker.
+    if v_seeker_lat is null or v_seeker_lng is null then
+      v_seeker_lat:=nullif(v_q.payload#>>'{origin,lat}','')::double precision;
+      v_seeker_lng:=nullif(v_q.payload#>>'{origin,lng}','')::double precision;
+    end if;
+  else
     select lat,lng into v_seeker_lat,v_seeker_lng from public.seeker_live_positions
       where game_id=p_game_id and updated_at>=now()-interval '20 seconds';
-  end if;
-  if v_seeker_lat is null or v_seeker_lng is null then
-    v_seeker_lat:=nullif(v_q.payload#>>'{origin,lat}','')::double precision;
-    v_seeker_lng:=nullif(v_q.payload#>>'{origin,lng}','')::double precision;
+    if v_seeker_lat is null or v_seeker_lng is null then
+      v_seeker_lat:=nullif(v_q.payload#>>'{origin,lat}','')::double precision;
+      v_seeker_lng:=nullif(v_q.payload#>>'{origin,lng}','')::double precision;
+    end if;
   end if;
   if v_seeker_lat is null or v_seeker_lng is null then return;end if;
 
@@ -297,7 +302,8 @@ begin
   if not public._hider_password_ok(p_game_id,p_password) then raise exception 'Invalid hider password.';end if;
   select * into v_trap from public.time_traps where id=p_trap_id and game_id=p_game_id; if not found then raise exception 'Time Trap not found.';end if;
   if p_active then
-    v_bonus:=public._time_trap_value_v4(v_trap.base_bonus_minutes,v_trap.armed_at,now());
+    -- Manual trigger intentionally awards only the base value. Accrual belongs to the automatic 50 m trigger.
+    v_bonus:=coalesce(v_trap.base_bonus_minutes,5);
     update public.time_traps set triggered_at=now(),bonus_minutes=v_bonus,trigger_active=true where id=p_trap_id;
     select id into v_action from public.game_actions where game_id=p_game_id and kind='time_trap_trigger' and payload->>'trap_id'=p_trap_id::text order by created_at desc limit 1;
     if v_action is null then
@@ -312,3 +318,82 @@ begin
   return true;
 end;$$;
 grant execute on function public.set_time_trap_trigger_v3(uuid,uuid,text,boolean) to anon,authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Developer dynamic map editor.
+-- Manual additions/overrides are deliberately separate from official caches,
+-- so refreshing Vienna datasets never destroys hand corrections.
+-- ---------------------------------------------------------------------------
+create table if not exists public.map_manual_items(
+  id uuid primary key default gen_random_uuid(),
+  category text not null check(category in ('station','transit','museum','park','library','cinema','hospital','cemetery','church','zoo')),
+  source_key text,
+  name text not null,
+  lat double precision,
+  lng double precision,
+  geometry jsonb,
+  properties jsonb not null default '{}'::jsonb,
+  enabled boolean not null default true,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+create unique index if not exists map_manual_items_source_unique
+  on public.map_manual_items(category,source_key) where source_key is not null;
+alter table public.map_manual_items enable row level security;
+revoke all on public.map_manual_items from anon,authenticated;
+
+create or replace function public.list_map_manual_items_v1()
+returns table(item_id uuid,category text,source_key text,name text,lat double precision,lng double precision,geometry jsonb,properties jsonb,enabled boolean,created_at timestamptz,updated_at timestamptz)
+language sql stable security definer set search_path=public as $$
+  select m.id,m.category,m.source_key,m.name,m.lat,m.lng,m.geometry,m.properties,m.enabled,m.created_at,m.updated_at
+  from public.map_manual_items m where m.enabled order by m.category,m.name;
+$$;
+grant execute on function public.list_map_manual_items_v1() to anon,authenticated;
+
+create or replace function public.admin_save_map_item_v1(
+  p_password text,p_item_id uuid,p_category text,p_source_key text,p_name text,
+  p_lat double precision,p_lng double precision,p_geometry jsonb,p_properties jsonb
+) returns uuid
+language plpgsql security definer set search_path=public as $$
+declare v_id uuid;v_props jsonb:=coalesce(p_properties,'{}'::jsonb);
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(.35);raise exception 'Invalid developer password.';end if;
+  if p_category not in ('station','transit','museum','park','library','cinema','hospital','cemetery','church','zoo') then raise exception 'Invalid map category.';end if;
+  if char_length(trim(coalesce(p_name,''))) not between 1 and 120 then raise exception 'Map item name must be 1-120 characters.';end if;
+  if jsonb_typeof(v_props)<>'object' then raise exception 'Map item properties must be a JSON object.';end if;
+  if p_category='transit' then
+    if p_source_key is null and (p_geometry is null or coalesce(p_geometry->>'type','') not in ('LineString','MultiLineString')) then raise exception 'A new transit line needs LineString geometry.';end if;
+    if p_geometry is not null and coalesce(p_geometry->>'type','') not in ('LineString','MultiLineString') then raise exception 'Transit geometry must be LineString or MultiLineString.';end if;
+  else
+    if p_lat is null or p_lng is null or p_lat not between 48.00 and 48.40 or p_lng not between 16.00 and 16.70 then raise exception 'Map point must be inside the Vienna editing guardrail.';end if;
+  end if;
+
+  if p_item_id is not null then
+    update public.map_manual_items set category=p_category,source_key=nullif(p_source_key,''),name=trim(p_name),lat=p_lat,lng=p_lng,geometry=p_geometry,properties=v_props,enabled=true,updated_at=now()
+    where id=p_item_id returning id into v_id;
+    if v_id is null then raise exception 'Manual map item not found.';end if;
+    return v_id;
+  end if;
+
+  if nullif(p_source_key,'') is not null then
+    select id into v_id from public.map_manual_items where category=p_category and source_key=p_source_key for update;
+    if v_id is not null then
+      update public.map_manual_items set name=trim(p_name),lat=p_lat,lng=p_lng,geometry=p_geometry,properties=v_props,enabled=true,updated_at=now() where id=v_id;
+      return v_id;
+    end if;
+  end if;
+
+  insert into public.map_manual_items(category,source_key,name,lat,lng,geometry,properties)
+  values(p_category,nullif(p_source_key,''),trim(p_name),p_lat,p_lng,p_geometry,v_props)
+  returning id into v_id;
+  return v_id;
+end;$$;
+grant execute on function public.admin_save_map_item_v1(text,uuid,text,text,text,double precision,double precision,jsonb,jsonb) to anon,authenticated;
+
+create or replace function public.admin_delete_map_item_v1(p_password text,p_item_id uuid)
+returns boolean language plpgsql security definer set search_path=public as $$
+begin
+  if not public._admin_password_ok(p_password) then perform pg_sleep(.35);raise exception 'Invalid developer password.';end if;
+  delete from public.map_manual_items where id=p_item_id;return found;
+end;$$;
+grant execute on function public.admin_delete_map_item_v1(text,uuid) to anon,authenticated;

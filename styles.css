@@ -514,3 +514,18 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 .player-run div { display:grid; gap:2px; }
 .player-run span { color:var(--muted); font-size:11px; }
 @media (max-width:560px){.developer-player-create{grid-template-columns:1fr}.player-run{align-items:flex-start}}
+
+
+/* v3.13.5 developer dynamic map editor */
+.developer-map-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto auto auto;gap:8px;align-items:end;margin:8px 0 12px}
+.developer-map-toolbar label{margin:0}
+.developer-map-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.75fr);gap:12px;align-items:start}
+.developer-map{height:min(68vh,720px);min-height:480px;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.developer-map-side{position:sticky;top:84px}
+.developer-map-form{display:grid;gap:8px;border:1px solid var(--line);border-radius:13px;padding:12px;background:#fff}
+.developer-map-form label{margin:0}
+.developer-map-form textarea{min-height:84px;resize:vertical}
+.developer-map-coordinate-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.developer-map-form-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+@media(max-width:900px){.developer-map-layout{grid-template-columns:1fr}.developer-map-side{position:static}.developer-map-toolbar{grid-template-columns:1fr 1fr}.developer-map{height:52vh;min-height:390px}}
+@media(max-width:520px){.developer-map-toolbar,.developer-map-form-actions,.developer-map-coordinate-grid{grid-template-columns:1fr}.developer-map{min-height:340px}}

@@ -88,6 +88,7 @@
             <button class="segment active" data-developer-tab="reference">Reference data</button>
             <button class="segment" data-developer-tab="cards">Card deck</button>
             <button class="segment" data-developer-tab="questions">Questions</button>
+            <button class="segment" data-developer-tab="map">Map</button>
             <button class="segment" data-developer-tab="players">Players</button>
             <button class="segment" data-developer-tab="games">Games</button>
           </div>
@@ -133,6 +134,34 @@
             </section>
           </div>
 
+
+          <div id="developerMapTab" class="developer-tab-panel hidden">
+            <section class="panel">
+              <div class="row-between"><div><div class="eyebrow">MAP EDITOR</div><h3>Dynamic Vienna reference map</h3></div><span id="developerMapStatus" class="mini-status">Choose a category.</span></div>
+              <div class="developer-map-toolbar">
+                <label>Category<select id="developerMapCategory">
+                  <option value="station">Stations</option>
+                  <option value="transit">Transit lines</option>
+                  <option value="museum">Tentacle · Museums</option>
+                  <option value="park">Tentacle · Parks</option>
+                  <option value="library">Tentacle · Libraries</option>
+                  <option value="cinema">Tentacle · Cinemas</option>
+                  <option value="hospital">Tentacle · Hospitals</option>
+                  <option value="cemetery">Tentacle · Cemeteries</option>
+                  <option value="church">Tentacle · Churches</option>
+                  <option value="zoo">Tentacle · Zoos / aquariums</option>
+                </select></label>
+                <button id="developerMapAddItem" class="primary">Add new</button>
+                <button id="developerMapFinishLine" class="primary hidden" disabled>Finish line</button>
+                <button id="developerMapCancelAdd" class="secondary hidden">Cancel</button>
+              </div>
+              <p class="hint">Click an existing station, transit line, or Tentacle POI to override its details. Manual additions are stored separately from the official Vienna cache, so a later reference-data refresh does not erase them.</p>
+              <div class="developer-map-layout">
+                <div id="developerMap" class="map developer-map"></div>
+                <div class="developer-map-side"><div id="developerMapEditor"><div class="status-box">Click an item on the map, or use <strong>Add new</strong>.</div></div></div>
+              </div>
+            </section>
+          </div>
 
           <div id="developerPlayersTab" class="developer-tab-panel hidden">
             <section class="panel">
