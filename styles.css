@@ -492,3 +492,40 @@ button.tiny,.tiny { min-height:0; padding:4px 7px; font-size:9px; border-radius:
 .vor-north-ring{--vor-north-angle:0deg;position:absolute;inset:11px;border-radius:50%;transform:rotate(var(--vor-north-angle));transition:transform .18s linear;pointer-events:none}.vor-north-ring span{position:absolute;top:-2px;left:50%;transform:translateX(-50%);font-size:.92rem;font-weight:900;line-height:1;color:#fff;text-shadow:0 1px 3px #000}
 .vor-center-dot{position:absolute;left:50%;top:50%;width:8px;height:8px;border-radius:50%;background:#fff;transform:translate(-50%,-50%);box-shadow:0 0 0 3px rgba(255,255,255,.12)}
 @media(max-width:620px){.vor-navigation-body{justify-content:center}.vor-navigation-copy{flex-basis:100%;text-align:center}}
+
+
+/* v3.13.5 player identity, location markers, rewards */
+.own-location-marker { background:transparent; border:0; }
+.own-location-marker span { display:block; width:22px; height:22px; margin:1px; border-radius:50%; background:#4285f4; border:3px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.35),0 0 0 1px #1a73e8; }
+.player-location-marker { background:transparent; border:0; }
+.player-location-marker span { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; color:#fff; border:2px solid #fff; font-size:10px; font-weight:950; letter-spacing:.02em; }
+.player-location-marker.red span { background:#ff1744; box-shadow:0 0 0 2px #ff1744,0 0 12px rgba(255,23,68,.65); }
+.player-location-marker.green span { background:#00c853; box-shadow:0 0 0 2px #00a844,0 0 9px rgba(0,200,83,.48); }
+.q-reward { margin-top:8px; width:max-content; max-width:100%; padding:4px 7px; border-radius:999px; background:#eef2ff; color:#3730a3; font-size:10px; font-weight:850; line-height:1.2; }
+.q-reward.suppressed { background:#fef3c7; color:#92400e; }
+.question-card-shell .q-reward { margin-bottom:2px; }
+.developer-player-create { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:center; margin:12px 0; }
+.developer-player-create input { margin:0; }
+.developer-player-list { display:grid; gap:10px; }
+.developer-player { border:1px solid var(--line); border-radius:13px; padding:12px; background:#fff; }
+.player-initials-pill { display:inline-grid; place-items:center; min-width:28px; height:24px; padding:0 7px; border-radius:999px; background:#e0e7ff; color:#3730a3; font-size:11px; font-weight:900; }
+.player-runs { display:grid; gap:6px; margin-top:9px; }
+.player-run { display:flex; align-items:center; justify-content:space-between; gap:8px; border-top:1px solid #eef2f7; padding-top:7px; }
+.player-run div { display:grid; gap:2px; }
+.player-run span { color:var(--muted); font-size:11px; }
+@media (max-width:560px){.developer-player-create{grid-template-columns:1fr}.player-run{align-items:flex-start}}
+
+
+/* v3.13.5 developer dynamic map editor */
+.developer-map-toolbar{display:grid;grid-template-columns:minmax(220px,1fr) auto auto auto;gap:8px;align-items:end;margin:8px 0 12px}
+.developer-map-toolbar label{margin:0}
+.developer-map-layout{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(280px,.75fr);gap:12px;align-items:start}
+.developer-map{height:min(68vh,720px);min-height:480px;border:1px solid var(--line);border-radius:14px;overflow:hidden}
+.developer-map-side{position:sticky;top:84px}
+.developer-map-form{display:grid;gap:8px;border:1px solid var(--line);border-radius:13px;padding:12px;background:#fff}
+.developer-map-form label{margin:0}
+.developer-map-form textarea{min-height:84px;resize:vertical}
+.developer-map-coordinate-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.developer-map-form-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px}
+@media(max-width:900px){.developer-map-layout{grid-template-columns:1fr}.developer-map-side{position:static}.developer-map-toolbar{grid-template-columns:1fr 1fr}.developer-map{height:52vh;min-height:390px}}
+@media(max-width:520px){.developer-map-toolbar,.developer-map-form-actions,.developer-map-coordinate-grid{grid-template-columns:1fr}.developer-map{min-height:340px}}

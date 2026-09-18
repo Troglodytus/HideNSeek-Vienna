@@ -7,7 +7,7 @@
   <title>Vienna Hide & Seek</title>
   <link rel="preconnect" href="https://unpkg.com" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="" />
-  <link rel="stylesheet" href="./styles.css?v=3.13.4" />
+  <link rel="stylesheet" href="./styles.css?v=3.13.5" />
 </head>
 <body>
   <main id="app">
@@ -40,6 +40,7 @@
           <div id="createTab" class="tab-content active">
             <label>Game name<input id="createGameName" maxlength="80" placeholder="e.g. Spot 1 – Daniel" autocomplete="off" /></label>
             <label>Hider password<input id="createPassword" type="password" minlength="4" maxlength="100" placeholder="At least 4 characters" /></label>
+            <label>Hider player<select id="hiderCreatePlayerSelect"><option value="">Loading players…</option></select></label>
 
             <div class="setup-step">
               <div class="step-number">1</div>
@@ -54,6 +55,7 @@
 
           <div id="openTab" class="tab-content">
             <label>Game<select id="hiderGameSelect"></select></label>
+            <label>Hider player<select id="hiderOpenPlayerSelect"><option value="">Loading players…</option></select></label>
             <label>Hider password<input id="openPassword" type="password" placeholder="Game password" /></label>
             <button id="openHiderGameButton" class="primary full">Open as hider</button>
           </div>
@@ -62,7 +64,8 @@
 
       <div id="seekerLobby" class="lobby-panel hidden">
         <div class="panel">
-          <p class="hint strong">Choose an active game. Seekers do not need the hider password.</p>
+          <p class="hint strong">Choose your player identity, then enter an active game. Seekers do not need the hider password.</p>
+          <label>Seeker player<select id="seekerPlayerSelect"><option value="">Loading players…</option></select></label>
           <div id="gameList" class="game-list"></div>
           <button id="refreshGamesButton" class="secondary full">Refresh games</button>
         </div>
@@ -72,7 +75,7 @@
     <section id="developerView" class="view">
       <header class="topbar">
         <button class="icon-button" data-action="developer-home" aria-label="Back">←</button>
-        <div><div class="eyebrow">DEVELOPER · BUILD 3.13.4</div><h2>Developer</h2></div>
+        <div><div class="eyebrow">DEVELOPER · BUILD 3.13.5</div><h2>Developer</h2></div>
       </header>
       <div class="developer-shell">
         <div id="developerLoginPanel" class="panel developer-login">
@@ -85,6 +88,8 @@
             <button class="segment active" data-developer-tab="reference">Reference data</button>
             <button class="segment" data-developer-tab="cards">Card deck</button>
             <button class="segment" data-developer-tab="questions">Questions</button>
+            <button class="segment" data-developer-tab="map">Map</button>
+            <button class="segment" data-developer-tab="players">Players</button>
             <button class="segment" data-developer-tab="games">Games</button>
           </div>
 
@@ -126,6 +131,44 @@
               <div class="row-between"><div><div class="eyebrow">QUESTIONS</div><h3>Question catalogue</h3></div><button id="developerAddQuestion" class="primary small">Add question</button></div>
               <p class="hint">Edit the question text and rule parameters. The rule preview shows the internal comparison or Overpass/reference-data query used by the engine.</p>
               <div id="developerQuestions" class="developer-question-list"></div>
+            </section>
+          </div>
+
+
+          <div id="developerMapTab" class="developer-tab-panel hidden">
+            <section class="panel">
+              <div class="row-between"><div><div class="eyebrow">MAP EDITOR</div><h3>Dynamic Vienna reference map</h3></div><span id="developerMapStatus" class="mini-status">Choose a category.</span></div>
+              <div class="developer-map-toolbar">
+                <label>Category<select id="developerMapCategory">
+                  <option value="station">Stations</option>
+                  <option value="transit">Transit lines</option>
+                  <option value="museum">Tentacle · Museums</option>
+                  <option value="park">Tentacle · Parks</option>
+                  <option value="library">Tentacle · Libraries</option>
+                  <option value="cinema">Tentacle · Cinemas</option>
+                  <option value="hospital">Tentacle · Hospitals</option>
+                  <option value="cemetery">Tentacle · Cemeteries</option>
+                  <option value="church">Tentacle · Churches</option>
+                  <option value="zoo">Tentacle · Zoos / aquariums</option>
+                </select></label>
+                <button id="developerMapAddItem" class="primary">Add new</button>
+                <button id="developerMapFinishLine" class="primary hidden" disabled>Finish line</button>
+                <button id="developerMapCancelAdd" class="secondary hidden">Cancel</button>
+              </div>
+              <p class="hint">Click an existing station, transit line, or Tentacle POI to override its details. Manual additions are stored separately from the official Vienna cache, so a later reference-data refresh does not erase them.</p>
+              <div class="developer-map-layout">
+                <div id="developerMap" class="map developer-map"></div>
+                <div class="developer-map-side"><div id="developerMapEditor"><div class="status-box">Click an item on the map, or use <strong>Add new</strong>.</div></div></div>
+              </div>
+            </section>
+          </div>
+
+          <div id="developerPlayersTab" class="developer-tab-panel hidden">
+            <section class="panel">
+              <div class="row-between"><div><div class="eyebrow">PLAYERS</div><h3>Player database &amp; Hider runs</h3></div></div>
+              <div class="developer-player-create"><input id="developerPlayerName" maxlength="100" placeholder="Full player name"><button id="developerAddPlayer" class="primary">Create player</button></div>
+              <p class="hint">Initials are generated automatically. Hider runs are sorted longest to shortest and can be reopened read-only.</p>
+              <div id="developerPlayers" class="developer-player-list"></div>
             </section>
           </div>
 
@@ -304,6 +347,6 @@
   <script src="https://unpkg.com/osmtogeojson@3.0.0-beta.5/osmtogeojson.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="./config.js"></script>
-  <script src="./app.js?v=3.13.4"></script>
+  <script src="./app.js?v=3.13.5"></script>
 </body>
 </html>
