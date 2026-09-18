@@ -538,7 +538,12 @@
   function manualMapItems(category){return (state.mapManualItems||[]).filter(x=>x.enabled!==false&&x.category===category);}
   function manualMapItemById(id){return (state.mapManualItems||[]).find(x=>String(x.item_id)===String(id))||null;}
   function stationMapSourceKey(st){return String(st?.properties?.mapSourceKey??st?.properties?.stationId??'');}
-  function transitMapSourceKey(f){return String(f?.properties?.mapSourceKey||stableFeatureKey(f));}
+  function transitMapSourceKey(f){
+    if(f?.properties?.mapSourceKey)return String(f.properties.mapSourceKey);
+    const p=f?.properties||{},id=f?.id??p.OBJECTID??p.FID??p.OGC_FID??p.ID??p.OBJECTID_1;
+    if(id!==undefined&&id!==null)return `id:${id}`;
+    return `geo:${hashGeometryText(stableFeatureKey(f))}`;
+  }
   function applyManualStationEdits(stations){
     const rows=manualMapItems('station'),by=new Map(rows.filter(x=>x.source_key).map(x=>[String(x.source_key),x])),out=[];
     for(const st0 of stations||[]){
@@ -3087,6 +3092,7 @@ ${failures.join('\n')}`,9000);
     el.querySelector('[data-delete-map-item]')?.addEventListener('click',()=>deleteDeveloperMapItem().catch(handleError));
   }
   function selectDeveloperMapFeature(category,f){
+    if(state.developerMapAddMode)return;
     state.developerMapSelection=developerMapSelectionFromFeature(category,f);renderDeveloperMapEditor();$('developerMapStatus').textContent=`Selected ${state.developerMapSelection.name}`;
   }
   async function renderDeveloperMap(){
@@ -3106,7 +3112,7 @@ ${failures.join('\n')}`,9000);
     group.addTo(state.developerMap);state.developerMapLayer=group;status.textContent=`${group.getLayers().length} ${humanize(category)} item${group.getLayers().length===1?'':'s'} · click to edit`;
   }
   async function setupDeveloperMap(){
-    if(!state.developerPassword)return;await ensureMapData();await loadMapManualItems(true);
+    if(!state.developerPassword)return;await loadMapManualItems(true);state.mapData=null;state.poiCache={};await ensureMapData();
     if(!state.developerMap){
       state.developerMap=L.map('developerMap',baseMapOptions());addBaseTiles(state.developerMap);state.developerMap.on('click',e=>handleDeveloperMapClick(e.latlng));
     }
