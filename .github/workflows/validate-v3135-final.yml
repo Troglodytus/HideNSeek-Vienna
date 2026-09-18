@@ -23,7 +23,7 @@ jobs:
           grep -F "developerMapTab" index.html
           grep -F "Dynamic Vienna reference map" index.html
           grep -F "admin_save_map_item_v1" app.js
-          grep -F "geo:${hashGeometryText(stableFeatureKey(f))}" app.js
+          grep -F 'geo:${hashGeometryText(stableFeatureKey(f))}' app.js
           grep -F "Manual trigger intentionally awards only the base value" supabase-v3.13.5-migration.sql
           grep -F "never to the legacy row which might currently belong to another Seeker" supabase-v3.13.5-migration.sql
           grep -F "create table if not exists public.map_manual_items" supabase-v3.13.5-migration.sql
