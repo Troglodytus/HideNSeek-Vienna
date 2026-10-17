@@ -2,7 +2,7 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.13.5';
+  const APP_VERSION = '3.13.6';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
@@ -12,7 +12,7 @@
   const TENTACLE_SEARCH_RADIUS_M = 5000;
   const BUS_TENTACLE_SEARCH_BUFFER_M = 1000;
   const BUS_TENTACLE_GRID_M = 15;
-  const VOR_NAV_DURATION_SECONDS = 180;
+  const VOR_NAV_DURATION_SECONDS = 90;
   const HEAVY_GEOMETRY_SIMPLIFY_DEG = 0.000018;
   const HEAVY_GEOMETRY_MIN_VERTEX_M = 1.5;
   const HEAVY_GEOMETRY_CACHE_LIMIT = 24;
@@ -89,7 +89,7 @@
     { slot:'station-interchange', category:'MIXED', title:'Nearest Station an Interchange?', detail:'Is the hiding station served by at least two U-/S-Bahn lines?', kind:'station_interchange' },
     { slot:'street-shape', category:'MIXED', title:'Current Street Shape', detail:'Endgame only: receive a hand-drawn outline of the Hider’s nearest street.', kind:'street_shape', endgame_only:true },
     { slot:'nearest-bus-line', category:'TENTACLES', title:'Nearest Bus Line', detail:'Endgame only: among Vienna bus lines crossing or within 1 km of the remaining area, keep the territory closest to the answered line.', kind:'bus_line_tentacle', endgame_only:true, search_buffer_m:BUS_TENTACLE_SEARCH_BUFFER_M },
-    { slot:'vor-navigation', category:'MIXED', title:'VOR Navigation', detail:'Endgame only: 3 minutes of a live 30° direction sector toward the hiding spot. No Hider answer required.', kind:'vor_navigation', endgame_only:true, duration_seconds:VOR_NAV_DURATION_SECONDS },
+    { slot:'vor-navigation', category:'MIXED', title:'VOR Navigation', detail:'Endgame only: 90 seconds of a live 30° direction sector toward the hiding spot. No Hider answer required.', kind:'vor_navigation', endgame_only:true, duration_seconds:VOR_NAV_DURATION_SECONDS },
     { slot:'transdanubia', category:'MIXED', title:'In Mordor?', detail:'Is the target across the Danube in district 21 or 22?', kind:'district_set', districts:[21,22], yes_label:'Yes', no_label:'No' },
     { slot:'inner-districts', category:'MIXED', title:'Inner Districts?', detail:'Is the target in districts 1–9?', kind:'district_set', districts:[1,2,3,4,5,6,7,8,9], yes_label:'Yes', no_label:'No' },
     { slot:'stephansdom-benchmark', category:'MIXED', title:'Closer to Stephansdom?', detail:'Is the target closer to Stephansdom than you are?', kind:'landmark_compare', landmark_name:'Stephansdom', landmark:{lat:48.20849,lng:16.37208} },
@@ -967,6 +967,12 @@
       if(state.role==='seeker'&&activeTurntablesAction())return;const p={lat:pos.coords.latitude,lng:pos.coords.longitude,accuracy_m:pos.coords.accuracy,source:'gps'};state.lastGpsUpdateMs=Date.now();setCurrentPosition(p,{pan:false,refreshDeck:false});
       if(state.role==='seeker'&&Date.now()-state.lastGpsPublishMs>=4000){state.lastGpsPublishMs=Date.now();publishSeekerLivePosition(p).then(()=>refreshSeekerPositions({force:true})).catch(e=>console.warn('Live Seeker GPS publish failed',e));}
     },e=>console.warn('Continuous GPS unavailable',e),{enableHighAccuracy:true,maximumAge:2000,timeout:15000});
+    // Some phones suspend watchPosition updates when stationary or in transit.
+    // Retry a fresh GPS fix when the stream stalls, keeping automatic trap checks alive.
+    state.gpsAutoTimer=setInterval(()=>{
+      if(state.role==='seeker'&&state.gpsAutoEnabled&&document.visibilityState==='visible'&&
+         Date.now()-state.lastGpsUpdateMs>=12000)refreshGpsAutoPosition().catch(e=>console.warn('Fallback GPS refresh failed',e));
+    },15000);
   }
   async function useCurrentGps(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();toast('GPS set · live tracking active.');}
   function beginManualCurrentPosition(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);stopGpsAutoTracking();state.pickMode='current_position';toast('Tap the map to set your position.');}
@@ -1439,8 +1445,8 @@
     if(card.kind==='vor_navigation'||card.engine_kind==='vor_navigation'){
       cancelQuestionPreview();const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
       try{await publishSeekerLivePosition(origin);}catch(e){console.warn('Could not pre-publish VOR seeker position',e);}
-      const duration=Math.max(30,Math.min(300,Number(card.duration_seconds||VOR_NAV_DURATION_SECONDS))),payload={slot_key:card.slot,question_kind:'vor_navigation',title:card.title,duration_seconds:duration,origin};
-      const ok=await confirmAction(`Start ${card.title}?`,`For 3 minutes a black direction display appears below the map. A fading red 30° sector points toward the Hider and updates from your GPS.\n\nWith compass/orientation permission it follows the phone heading. Without compass access it stays north-up with a white N at the top. The Hider does not answer manually.`,`Start VOR`);if(!ok)return;
+      const duration=Math.max(30,Math.min(VOR_NAV_DURATION_SECONDS,Number(card.duration_seconds||VOR_NAV_DURATION_SECONDS))),payload={slot_key:card.slot,question_kind:'vor_navigation',title:card.title,duration_seconds:duration,origin};
+      const ok=await confirmAction(`Start ${card.title}?`,`For 90 seconds a black direction display appears below the map. A fading red 30° sector points toward the Hider and updates from your GPS.\n\nWith compass/orientation permission it follows the phone heading. Without compass access it stays north-up with a white N at the top. The Hider does not answer manually.`,`Start VOR`);if(!ok)return;
       const qId=await askQuestionForCurrentPlayer(card,'vor_navigation',payload);
       const {error:activateError}=await state.supabase.rpc('activate_vor_navigation_v1',{p_game_id:state.game.id,p_question_action_id:qId});if(activateError)throw activateError;
       await reloadGameState();renderVorNavigation();return;
@@ -2040,7 +2046,7 @@ This becomes the new secret station. Previous deductions and Endgame reset; Pros
     const {error}=await state.supabase.rpc('place_time_trap_v4',{p_game_id:state.game.id,p_password:state.hiderPassword,p_card_key:card.card_key,p_station_name:feature.properties.stationName,p_station_lat:lat,p_station_lng:lng});if(error)throw error;await reloadGameState();
   }
   async function triggerTimeTrap(trap,active=true){
-    const verb=active?'Trigger':'Undo trigger',base=Number(trap.base_bonus_minutes||5);const ok=await confirmAction(`${verb} Time Trap?`,`${trap.station_name}\n${active?`Manual trigger locks this trap at its base +${base} min. Accrued time is awarded only when a Seeker automatically triggers it within 50 m.`:'The bonus is removed; the clock marker stays on the map.'}`,verb,!active);if(!ok)return;
+    const verb=active?'Trigger':'Undo trigger',base=Number(trap.base_bonus_minutes||5);const ok=await confirmAction(`${verb} Time Trap?`,`${trap.station_name}\n${active?`Manual trigger locks this trap at its base +${base} min. Accrued time is awarded only when a Seeker automatically triggers it within 100 m.`:'The bonus is removed; the clock marker stays on the map.'}`,verb,!active);if(!ok)return;
     const {error}=await state.supabase.rpc('set_time_trap_trigger_v3',{p_game_id:state.game.id,p_trap_id:trap.id,p_password:state.hiderPassword,p_active:active});if(error)throw error;await reloadGameState();
   }
 
@@ -2428,7 +2434,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   }
 
   function renderTimeTraps(){
-    if(state.role!=='hider')return;$('timeTraps').innerHTML=state.timeTraps.length?state.timeTraps.map(t=>{const autoValue=Number(t.current_bonus_minutes||t.bonus_minutes||t.base_bonus_minutes||5),base=Number(t.base_bonus_minutes||5),accrued=Math.max(0,autoValue-base);return `<div class="question-item ${t.trigger_active?'time-trap-triggered':'time-trap-armed'}"><strong>${escapeHtml(t.station_name)}</strong><div class="meta">${t.trigger_active?`Triggered · locked at ${Number(t.bonus_minutes||base)} min`:`Manual trigger: +${base} min · auto trigger now: +${autoValue} min${accrued?` (${base} base + ${accrued} accrued)`:''} · +5 every full 10 min · auto within 50 m`}</div><button class="${t.trigger_active?'secondary':'primary'} small full" data-trigger-trap="${t.id}" data-trap-active="${t.trigger_active?'false':'true'}">${t.trigger_active?'Undo trigger':`Trigger now (+${base} min)`}</button></div>`;}).join(''):'<div class="mini-status">No Time Traps placed.</div>';
+    if(state.role!=='hider')return;$('timeTraps').innerHTML=state.timeTraps.length?state.timeTraps.map(t=>{const autoValue=Number(t.current_bonus_minutes||t.bonus_minutes||t.base_bonus_minutes||5),base=Number(t.base_bonus_minutes||5),accrued=Math.max(0,autoValue-base);return `<div class="question-item ${t.trigger_active?'time-trap-triggered':'time-trap-armed'}"><strong>${escapeHtml(t.station_name)}</strong><div class="meta">${t.trigger_active?`Triggered · locked at ${Number(t.bonus_minutes||base)} min`:`Manual trigger: +${base} min · auto trigger now: +${autoValue} min${accrued?` (${base} base + ${accrued} accrued)`:''} · +5 every full 10 min · auto within 100 m`}</div><button class="${t.trigger_active?'secondary':'primary'} small full" data-trigger-trap="${t.id}" data-trap-active="${t.trigger_active?'false':'true'}">${t.trigger_active?'Undo trigger':`Trigger now (+${base} min)`}</button></div>`;}).join(''):'<div class="mini-status">No Time Traps placed.</div>';
     $('timeTraps').querySelectorAll('[data-trigger-trap]').forEach(b=>b.addEventListener('click',()=>{const t=state.timeTraps.find(x=>x.id===b.dataset.triggerTrap);if(t)triggerTimeTrap(t,b.dataset.trapActive==='true').catch(handleError);}));
   }
 
@@ -2579,8 +2585,21 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     for(const q of qs){const a=activeAnswerForQuestion(q.id),answer=a?.payload?.answer;if(answer?.type!=='vor_navigation')continue;const expiry=new Date(answer.expires_at).getTime();if(Number.isFinite(expiry)&&expiry>serverNowMs())return{question:q,answer,expiry};}return null;
   }
   async function requestVorBearing(q,{force=false}={}){
-    if(!q||state.role!=='seeker'||state.vorBearingBusy)return;const now=Date.now();if(!force&&now-state.vorLastBearingFetch<1000)return;state.vorLastBearingFetch=now;state.vorBearingBusy=true;
-    try{const {data,error}=await state.supabase.rpc('get_vor_navigation_bearing_v1',{p_game_id:state.game.id,p_question_action_id:q.id});if(error)throw error;const row=Array.isArray(data)?data[0]:data;if(row&&Number.isFinite(Number(row.bearing_deg))){state.vorBearing=normalizeDegrees(Number(row.bearing_deg));state.vorExpiresAt=new Date(row.expires_at).getTime();}}catch(e){console.warn('VOR bearing refresh failed',e);}finally{state.vorBearingBusy=false;}
+    // Query the CURRENT viewing Seeker's live GPS row, not the player who originally asked VOR.
+    // The server returns a bearing only; the Hider's secret coordinates never reach the client.
+    if(!q||state.role!=='seeker'||state.vorBearingBusy||!state.currentPlayer?.player_id||!state.game)return;
+    const now=Date.now();if(!force&&now-state.vorLastBearingFetch<1000)return;state.vorLastBearingFetch=now;state.vorBearingBusy=true;
+    const gameId=state.game.id,playerId=state.currentPlayer.player_id;
+    try{
+      const {data,error}=await state.supabase.rpc('get_vor_navigation_bearing_v2',{p_game_id:gameId,p_question_action_id:q.id,p_player_id:playerId});if(error)throw error;
+      if(state.game?.id!==gameId||state.currentPlayer?.player_id!==playerId||state.vorQuestionId!==q.id)return;
+      const row=Array.isArray(data)?data[0]:data;
+      if(row&&Number.isFinite(Number(row.bearing_deg))){
+        state.vorBearing=normalizeDegrees(Number(row.bearing_deg));
+        state.vorExpiresAt=new Date(row.expires_at).getTime();
+      }else state.vorBearing=null; // No fresh GPS: never present an outdated direction as live.
+    }catch(e){console.warn('VOR bearing refresh failed',e);if(state.game?.id===gameId&&state.vorQuestionId===q.id)state.vorBearing=null;}
+    finally{state.vorBearingBusy=false;}
   }
   async function publishHiderVorLivePosition(q,p){
     if(state.role!=='hider'||!state.hiderPassword||!state.game||!q||!p)return;
