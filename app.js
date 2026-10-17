@@ -150,7 +150,7 @@
     overpassBadUntil:{}, railLoadPromise:null,
     confirmResolver:null,
     currentPosition:null,currentPositionMarker:null,currentPositionAccuracyCircle:null,
-    gpsAutoTimer:null,gpsWatchId:null,gpsAutoEnabled:false,lastGpsUpdateMs:0,lastGpsPublishMs:0,seekerPositionFetchBusy:false,lastSeekerPositionFetch:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
+    gpsAutoTimer:null,gpsWatchId:null,gpsAutoEnabled:false,gpsAutoRefreshBusy:false,lastGpsUpdateMs:0,lastGpsPublishMs:0,seekerPositionFetchBusy:false,lastSeekerPositionFetch:0,seekerLivePosition:null,deckStatus:null,castResolver:null,castCard:null,
     thermoReferences:{},previewQuestionSlot:null,previewQuestionCard:null,
     seenCurseIds:new Set(),curseSoundPrimed:false,audioCtx:null,notificationPrimed:false,seenNotificationActionIds:new Set(),photoUploadToken:null,photoUrlCache:new Map(),photoPreviewUrls:new Map(),photoFiles:new Map(),
     developerPassword:null,referenceMeta:{},sameLineSelection:null,developerCards:[],developerQuestions:[],developerPlayers:[],developerPlayerRuns:[],mapManualItems:[],mapManualItemsLoaded:false,developerMap:null,developerMapLayer:null,developerMapSelection:null,developerMapAddMode:null,developerMapDraftCoords:[],developerMapDraftLayer:null,developerMapCategory:'station',developerMapLoaded:false,questionDeckRefreshPending:false,questionCards:DEFAULT_QUESTION_CARDS.map(x=>({...x})),curseMapSignature:null,turntablesPickMode:false,turntablesCandidate:null,developerPreview:false,developerPreviewRole:null,passierscheinWasActive:false,lastTurntablesFrozen:false,
@@ -960,7 +960,7 @@
     if(Number(data)>0)toast(`Time Trap triggered · ${Number(data)} trap${Number(data)===1?'':'s'}!`,5000);return Number(data||0);
   }
   function stopGpsAutoTracking(){if(state.gpsAutoTimer)clearInterval(state.gpsAutoTimer);state.gpsAutoTimer=null;if(state.gpsWatchId!==null&&navigator.geolocation){try{navigator.geolocation.clearWatch(state.gpsWatchId);}catch(_){}}state.gpsWatchId=null;state.gpsAutoEnabled=false;}
-  async function refreshGpsAutoPosition(){if(!state.game||!state.gpsAutoEnabled)return;if(state.role==='seeker'&&activeTurntablesAction())return;try{const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'},{pan:false,refreshDeck:false});if(state.role==='seeker')await publishSeekerLivePosition(p);}catch(e){console.warn('Automatic GPS refresh failed',e);}}
+  async function refreshGpsAutoPosition(){if(!state.game||!state.gpsAutoEnabled||state.gpsAutoRefreshBusy)return;if(state.role==='seeker'&&activeTurntablesAction())return;state.gpsAutoRefreshBusy=true;try{const p=await getGps();if(!state.game||!state.gpsAutoEnabled)return;state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'},{pan:false,refreshDeck:false});if(state.role==='seeker')await publishSeekerLivePosition(p);}catch(e){console.warn('Automatic GPS refresh failed',e);}finally{state.gpsAutoRefreshBusy=false;}}
   function startGpsAutoTracking(){
     stopGpsAutoTracking();if(state.developerPreview||!state.game||!navigator.geolocation)return;state.gpsAutoEnabled=true;
     state.gpsWatchId=navigator.geolocation.watchPosition(pos=>{
@@ -971,8 +971,9 @@
     // Retry a fresh GPS fix when the stream stalls, keeping automatic trap checks alive.
     state.gpsAutoTimer=setInterval(()=>{
       if(state.role==='seeker'&&state.gpsAutoEnabled&&document.visibilityState==='visible'&&
-         Date.now()-state.lastGpsUpdateMs>=12000)refreshGpsAutoPosition().catch(e=>console.warn('Fallback GPS refresh failed',e));
-    },15000);
+         Date.now()-state.lastGpsUpdateMs>=(activeVorNavigation()?8000:12000))
+        refreshGpsAutoPosition().catch(e=>console.warn('Fallback GPS refresh failed',e));
+    },5000);
   }
   async function useCurrentGps(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);const p=await getGps();state.lastGpsUpdateMs=Date.now();setCurrentPosition({...p,source:'gps'});if(state.role==='seeker')await publishSeekerLivePosition(p);startGpsAutoTracking();toast('GPS set · live tracking active.');}
   function beginManualCurrentPosition(){if(state.role==='seeker'&&activeTurntablesAction())return toast('Turntables: Seekers must stay put until the red timer ends.',5000);stopGpsAutoTracking();state.pickMode='current_position';toast('Tap the map to set your position.');}
@@ -1444,7 +1445,12 @@
 
     if(card.kind==='vor_navigation'||card.engine_kind==='vor_navigation'){
       cancelQuestionPreview();const origin=await resolveQuestionOrigin(card,providedOrigin);if(!origin)return;
-      try{await publishSeekerLivePosition(origin);}catch(e){console.warn('Could not pre-publish VOR seeker position',e);}
+      // VOR uses the Seeker's real current GPS rather than an earlier manually placed question origin.
+      let liveGps=origin;
+      if(origin.source!=='gps'){
+        try{liveGps=await getGps();}catch(e){console.warn('VOR needs live GPS',e);return toast('Allow GPS access before starting VOR. The 90-second timer has not started.',5000);}
+      }
+      try{await publishSeekerLivePosition(liveGps);}catch(e){console.warn('Could not pre-publish VOR seeker position',e);return toast('Could not publish your live position. VOR has not started.',5000);}
       const duration=Math.max(30,Math.min(VOR_NAV_DURATION_SECONDS,Number(card.duration_seconds||VOR_NAV_DURATION_SECONDS))),payload={slot_key:card.slot,question_kind:'vor_navigation',title:card.title,duration_seconds:duration,origin};
       const ok=await confirmAction(`Start ${card.title}?`,`For 90 seconds a black direction display appears below the map. A fading red 30° sector points toward the Hider and updates from your GPS.\n\nWith compass/orientation permission it follows the phone heading. Without compass access it stays north-up with a white N at the top. The Hider does not answer manually.`,`Start VOR`);if(!ok)return;
       const qId=await askQuestionForCurrentPlayer(card,'vor_navigation',payload);
