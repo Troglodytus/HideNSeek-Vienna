@@ -29,7 +29,7 @@ for f in features:
  raw=p.get('FLAECHE')
  if isinstance(raw,(int,float)):area=float(raw)
  else:
-  numeric=''.join(c for c in str(raw or '') if c.isdigit() or c in '.,')
+  numeric=''.join(c for c in str(raw or '') if c in '0123456789.,')
   area=float(numeric.replace('.','').replace(',','.')) if numeric else math.nan
  if not math.isfinite(area) or area<100:skipped_area+=1;continue
  g=f.get('geometry') or {}
