@@ -1608,7 +1608,15 @@
       if(['private','no','customers','permit'].includes(access))return null;
       const area=osmFeatureAreaM2(e);
       if(!Number.isFinite(area)||area<PARK_MIN_AREA_M2)return null;
-      const lat=e.center?.lat??e.lat,lng=e.center?.lon??e.lon;
+      // Overpass "out geom" supplies full coordinates but not necessarily a center.
+      // Keep the same bbox-center convention used by the previous park dataset.
+      const vertices=e.type==='way'?(e.geometry||[]):(e.members||[]).flatMap(m=>m.geometry||[]);
+      const lats=vertices.map(x=>Number(x.lat)).filter(Number.isFinite),
+            lngs=vertices.map(x=>Number(x.lon)).filter(Number.isFinite);
+      const lat=Number.isFinite(e.center?.lat)?e.center.lat:
+        (lats.length?(Math.min(...lats)+Math.max(...lats))/2:e.lat);
+      const lng=Number.isFinite(e.center?.lon)?e.center.lon:
+        (lngs.length?(Math.min(...lngs)+Math.max(...lngs))/2:e.lon);
       if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
       return {id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`Park ${i+1}`,lat,lng,area_m2:Math.round(area)};
     }).filter(Boolean);
@@ -2811,7 +2819,7 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
     // The official PARKANLAGEOGD layer is point-based; use OSM polygon geometry
     // here so a measurable >=100 m² rule survives every future refresh.
     if(type==='park'){
-      const query=`[out:json][timeout:45];(way["leisure"="park"](${tile.overpass});relation["leisure"="park"](${tile.overpass}););out center geom tags qt;`;
+      const query=`[out:json][timeout:45];(way["leisure"="park"](${tile.overpass});relation["leisure"="park"](${tile.overpass}););out geom tags qt;`;
       const osm=await fetchOverpass(query,`Park polygons · ${tile.id}`,65000);
       return {pois:parseParkAreaElements(osm),source:`OpenStreetMap / area >=${PARK_MIN_AREA_M2} m²`};
     }
