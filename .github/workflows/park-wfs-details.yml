@@ -1,0 +1,28 @@
+name: Inspect Vienna WFS parks
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/park-wfs-details-trigger.txt]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspect Vienna WFS for parks
+        run: |
+          python3 - <<'PY'
+          import urllib.parse,urllib.request,re
+          base='https://data.wien.gv.at/daten/geo'
+          cases=[
+            {'service':'WFS','request':'GetFeature','version':'1.1.0','typeName':'ogdwien:PARKANLAGEOGD','outputFormat':'json','maxFeatures':'1'},
+            {'service':'WFS','request':'GetFeature','version':'1.1.0','typeName':'ogdwien:PARKANLAGEOGD','srsName':'EPSG:4326','outputFormat':'json','maxFeatures':'1'},
+            {'service':'WFS','request':'GetCapabilities','version':'1.1.0'}
+          ]
+          for params in cases:
+            try:
+              url=base+'?'+urllib.parse.urlencode(params)
+              with urllib.request.urlopen(url,timeout=12) as f: raw=f.read(1200000).decode(errors='replace')
+              print(params['request'],len(raw),raw[:1500] if params['request']=='GetFeature' else [raw[max(0,m.start()-100):m.start()+200] for m in list(re.finditer(r'(?i)park',raw))[:15]],flush=True)
+            except Exception as e:print(str(e),flush=True)
+          PY
