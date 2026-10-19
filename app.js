@@ -1565,7 +1565,7 @@
     const numeric=String(raw||'').replace(/[^0-9,.]/g,'');
     if(!numeric)return null;
     // Municipal FLAECHE is usually German-formatted: "5.132 m²" = 5132 m².
-    const value=Number(numeric.replace(/\\./g,'').replace(',','.'));
+    const value=Number(numeric.replace(/\./g,'').replace(',','.'));
     return Number.isFinite(value)?value:null;
   }
 
