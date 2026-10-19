@@ -39,7 +39,7 @@
   const VIENNA_TRANSIT_LINES_LAYER='OEFFLINIENOGD';
   const VIENNA_TRANSIT_STOPS_LAYER='OEFFHALTESTOGD';
   const VIENNA_UBAHN_STOPS_LAYER='UBAHNHALTOGD';
-  const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKANLAGEOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
+  const WFS_POI_LAYERS={museum:'MUSEUMOGD',park:'PARKINFOOGD',library:'BUECHEREIOGD',hospital:'KRANKENHAUSOGD'};
   const ACTIVE_POI_TYPES=['museum','park','library','cinema','hospital','cemetery','church','zoo'];
   const VIENNA_DISTRICT_ARCGIS='https://www.wien.gv.at/agssoe/rest/services/MapExport/MapExportService/MapServer/0/query?where=1%3D1&outFields=*&returnGeometry=true&outSR=4326&f=geojson';
   // Current 2026 Wiener Weinwandertag access/start/end points. The official event has
@@ -1560,6 +1560,15 @@
     throw new Error(`${humanize(type)} reference data are not fully seeded in Supabase. Open Developer and refresh that category.`);
   }
 
+  function officialParkAreaM2(raw){
+    if(typeof raw==='number')return Number.isFinite(raw)?raw:null;
+    const numeric=String(raw||'').replace(/[^0-9,.]/g,'');
+    if(!numeric)return null;
+    // Municipal FLAECHE is usually German-formatted: "5.132 m²" = 5132 m².
+    const value=Number(numeric.replace(/\\./g,'').replace(',','.'));
+    return Number.isFinite(value)?value:null;
+  }
+
   function osmAreaRing(coords){
     if(!Array.isArray(coords)||coords.length<4)return 0;
     const first=coords[0],last=coords[coords.length-1];
@@ -2815,13 +2824,26 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   }
   async function fetchPoiTile(type,tile){
     const filter=POI_QUERIES[type];if(!filter)throw new Error(`No data source for ${type}.`);
-    // Parks must be real mapped areas, not arbitrary leisure=park points.
-    // The official PARKANLAGEOGD layer is point-based; use OSM polygon geometry
-    // here so a measurable >=100 m² rule survives every future refresh.
+    // Vienna's official park info dataset contains park name, location and FLAECHE
+    // (often formatted "5.132 m²"). Use that actual area, not an OSM label.
     if(type==='park'){
-      const query=`[out:json][timeout:45];(way["leisure"="park"](${tile.overpass});relation["leisure"="park"](${tile.overpass}););out geom tags qt;`;
-      const osm=await fetchOverpass(query,`Park polygons · ${tile.id}`,65000);
-      return {pois:parseParkAreaElements(osm),source:`OpenStreetMap / area >=${PARK_MIN_AREA_M2} m²`};
+      try{
+        const geo=await fetchWfsTile('PARKINFOOGD','Official Vienna parks',tile);
+        const parks=(geo.features||[]).map((f,i)=>{
+          const area=officialParkAreaM2(f.properties?.FLAECHE);
+          if(!(area>=PARK_MIN_AREA_M2))return null;
+          const poi=featureToPoi(f,type,i);
+          return poi?{...poi,area_m2:Math.round(area)}:null;
+        }).filter(Boolean);
+        return {pois:parks,source:`Stadt Wien PARKINFOOGD · area >=${PARK_MIN_AREA_M2} m²`};
+      }catch(e){
+        // If the official service is temporarily unavailable, still enforce the
+        // same minimum area using OSM polygons; never accept arbitrary OSM points.
+        console.warn('Official Vienna park tile failed; checking OSM polygons instead',e);
+        const query=`[out:json][timeout:45];(way["leisure"="park"](${tile.overpass});relation["leisure"="park"](${tile.overpass}););out geom tags qt;`;
+        const osm=await fetchOverpass(query,`Park polygons · ${tile.id}`,65000);
+        return {pois:parseParkAreaElements(osm),source:`OpenStreetMap / area >=${PARK_MIN_AREA_M2} m²`};
+      }
     }
     const layer=WFS_POI_LAYERS[type];
     if(layer){
