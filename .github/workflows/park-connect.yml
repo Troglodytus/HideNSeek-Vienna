@@ -1,0 +1,29 @@
+name: Check park geometry endpoints
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/park-connect-trigger.txt]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe OSM geometry
+        run: |
+          python3 - <<'PY'
+          import urllib.request,urllib.parse,time,concurrent.futures
+          urls=['https://overpass.kumi.systems/api/interpreter','https://overpass-api.de/api/interpreter','https://overpass.nchc.org.tw/api/interpreter','https://overpass.private.coffee/api/interpreter']
+          q='[out:json][timeout:10];way(29101615);out geom tags;'
+          def probe(u):
+            try:
+              data=urllib.parse.urlencode({'data':q}).encode()
+              req=urllib.request.Request(u,data=data,method='POST',headers={'User-Agent':'HideNSeek-Vienna Park area audit'})
+              t=time.monotonic()
+              with urllib.request.urlopen(req,timeout=12) as r:
+                b=r.read()
+              return (u,'OK',len(b),round(time.monotonic()-t,1),b[:90].decode(errors='replace'))
+            except Exception as e:return (u,'FAILED',str(e)[:220])
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+            for result in pool.map(probe,urls):print(result,flush=True)
+          PY
