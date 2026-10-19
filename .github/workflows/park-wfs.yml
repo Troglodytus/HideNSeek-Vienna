@@ -1,0 +1,32 @@
+name: Check Vienna official parks
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/park-wfs-trigger.txt]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: Probe official Vienna parks and OSM API
+        run: |
+          python3 - <<'PY'
+          import urllib.request,urllib.parse,time,concurrent.futures
+          base='https://data.wien.gv.at/daten/geo'
+          params={'service':'WFS','request':'GetFeature','version':'1.1.0','typeName':'ogdwien:PARKANLAGEOGD','srsName':'EPSG:4326','outputFormat':'json','maxFeatures':3}
+          wfs=base+'?'+urllib.parse.urlencode(params)
+          q='[out:json][timeout:10];way(29101615);out geom tags;'
+          over='https://overpass-api.de/api/interpreter?'+urllib.parse.urlencode({'data':q})
+          urls=[wfs,over,'https://www.data.gv.at/katalog/dataset/stadt-wien_parkanlagenstandortewien']
+          def probe(u):
+            try:
+              t=time.monotonic()
+              req=urllib.request.Request(u,headers={'User-Agent':'HideNSeek/3.13.7','Accept':'application/json'})
+              with urllib.request.urlopen(req,timeout=14) as r:
+                b=r.read(8000)
+                return r.status,r.headers.get('content-type'),round(time.monotonic()-t,1),b[:300].decode(errors='replace')
+            except Exception as e:return 'FAILED',str(e)[:240]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            for u,result in zip(urls,pool.map(probe,urls)):print(u.split('?')[0],result,flush=True)
+          PY
