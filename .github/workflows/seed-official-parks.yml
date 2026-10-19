@@ -1,0 +1,26 @@
+name: Seed official Parks reference
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/official-park-trigger.txt]
+permissions:
+  contents: write
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v3.13.7-park-area-filter
+      - name: Validate frontend
+        run: node --check app.js
+      - name: Fetch and measure official Vienna parks
+        run: python3 .github/seed-official-parks.py
+      - name: Store one-time data payload in audit branch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/parks-official-seed.json
+          git commit -m 'audit: official Vienna parks >=100 m2'
+          git push origin HEAD:feature/v3.13.7-park-area-filter
