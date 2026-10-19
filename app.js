@@ -2,13 +2,14 @@
   'use strict';
 
   const CFG = window.HNS_CONFIG || {};
-  const APP_VERSION = '3.13.6';
+  const APP_VERSION = '3.13.7';
   const VIENNA_CENTER = [48.2082, 16.3738];
   const VIENNA_ZOOM = 12;
   const VIENNA_RELATION_ID = 109166;
   const VIENNA_AREA_ID = 3600109166;
   const BASE_HIDE_RADIUS_M = 250;
   const TENTACLE_VALID_DISTANCE_M = 250;
+  const PARK_MIN_AREA_M2 = 100;
   const TENTACLE_SEARCH_RADIUS_M = 5000;
   const BUS_TENTACLE_SEARCH_BUFFER_M = 1000;
   const BUS_TENTACLE_GRID_M = 15;
@@ -1558,6 +1559,61 @@
     }
     throw new Error(`${humanize(type)} reference data are not fully seeded in Supabase. Open Developer and refresh that category.`);
   }
+
+  function osmAreaRing(coords){
+    if(!Array.isArray(coords)||coords.length<4)return 0;
+    const first=coords[0],last=coords[coords.length-1];
+    if(!first||!last||first[0]!==last[0]||first[1]!==last[1])return 0;
+    try{return turf.area(turf.polygon([coords]));}catch(_){return 0;}
+  }
+  function osmFeatureAreaM2(e){
+    if(e?.type==='way'){
+      const coords=(e.geometry||[]).map(x=>[Number(x.lon),Number(x.lat)]);
+      return osmAreaRing(coords);
+    }
+    if(e?.type!=='relation')return 0;
+    const members=(e.members||[]).filter(x=>x.type==='way'&&(x.role==='outer'||x.role==='inner')&&x.geometry?.length>=2);
+    const connectedRings=role=>{
+      const segments=members.filter(x=>x.role===role).map(x=>x.geometry.map(p=>[Number(p.lon),Number(p.lat)]));
+      const rings=[];
+      const same=(a,b)=>a?.[0]===b?.[0]&&a?.[1]===b?.[1];
+      while(segments.length){
+        let chain=segments.pop(),joined=true;
+        // Assemble relation members as complete closed rings, including reversed ways.
+        while(!same(chain[0],chain[chain.length-1])&&joined){
+          joined=false;
+          for(let i=0;i<segments.length;i++){
+            const candidate=segments[i],c0=candidate[0],c1=candidate[candidate.length-1],
+              start=chain[0],end=chain[chain.length-1];
+            if(same(end,c0)){chain=chain.concat(candidate.slice(1));}
+            else if(same(end,c1)){chain=chain.concat(candidate.slice(0,-1).reverse());}
+            else if(same(start,c1)){chain=candidate.slice(0,-1).concat(chain);}
+            else if(same(start,c0)){chain=candidate.slice(1).reverse().concat(chain);}
+            else continue;
+            segments.splice(i,1);joined=true;break;
+          }
+        }
+        if(!same(chain[0],chain[chain.length-1]))return null;
+        rings.push(chain);
+      }
+      return rings;
+    };
+    const outer=connectedRings('outer'),inner=connectedRings('inner');
+    if(!outer?.length||inner===null)return 0;
+    return Math.max(0,outer.reduce((n,r)=>n+osmAreaRing(r),0)-(inner||[]).reduce((n,r)=>n+osmAreaRing(r),0));
+  }
+  function parseParkAreaElements(osm){
+    return (osm.elements||[]).map((e,i)=>{
+      const access=String(e.tags?.access||'').toLowerCase();
+      if(['private','no','customers','permit'].includes(access))return null;
+      const area=osmFeatureAreaM2(e);
+      if(!Number.isFinite(area)||area<PARK_MIN_AREA_M2)return null;
+      const lat=e.center?.lat??e.lat,lng=e.center?.lon??e.lon;
+      if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;
+      return {id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`Park ${i+1}`,lat,lng,area_m2:Math.round(area)};
+    }).filter(Boolean);
+  }
+
   function parsePoiElements(osm,type){
     return (osm.elements||[]).map((e,i)=>{const lat=e.lat??e.center?.lat,lng=e.lon??e.center?.lon;if(!Number.isFinite(lat)||!Number.isFinite(lng))return null;return{id:`${e.type}/${e.id??i}`,name:e.tags?.name||e.tags?.['name:de']||`${humanize(type)} ${i+1}`,lat,lng};}).filter(Boolean);
   }
@@ -2751,6 +2807,14 @@ Zone: ${Math.round(limit)} m`,'Start Endgame');if(!ok)return;
   }
   async function fetchPoiTile(type,tile){
     const filter=POI_QUERIES[type];if(!filter)throw new Error(`No data source for ${type}.`);
+    // Parks must be real mapped areas, not arbitrary leisure=park points.
+    // The official PARKANLAGEOGD layer is point-based; use OSM polygon geometry
+    // here so a measurable >=100 m² rule survives every future refresh.
+    if(type==='park'){
+      const query=`[out:json][timeout:45];(way["leisure"="park"](${tile.overpass});relation["leisure"="park"](${tile.overpass}););out center geom tags qt;`;
+      const osm=await fetchOverpass(query,`Park polygons · ${tile.id}`,65000);
+      return {pois:parseParkAreaElements(osm),source:`OpenStreetMap / area >=${PARK_MIN_AREA_M2} m²`};
+    }
     const layer=WFS_POI_LAYERS[type];
     if(layer){
       try{
