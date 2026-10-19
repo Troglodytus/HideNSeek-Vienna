@@ -1550,7 +1550,7 @@
       let pois=null;
       try{const ref=await referenceDataset(REF_POI_PREFIX+sourceType+'_v1');if(Array.isArray(ref?.pois))pois=ref.pois;}catch(e){console.warn('POI reference lookup failed',sourceType,e);}
       if(!pois){const cached=localStorage.getItem(POI_CACHE_PREFIX+sourceType);if(cached){try{const obj=JSON.parse(cached);if(Array.isArray(obj.pois))pois=obj.pois;}catch(_){}}}
-      for(const p of pois||[]){const key=String(p.id||`${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)},${p.name||''}`);if(seen.has(key))continue;seen.add(key);objects.push({...p,_mapSourceKey:key});}
+      for(const p of pois||[]){if(type==='park'&&!(Number(p.area_m2)>=PARK_MIN_AREA_M2))continue;const key=String(p.id||`${Number(p.lat).toFixed(6)},${Number(p.lng).toFixed(6)},${p.name||''}`);if(seen.has(key))continue;seen.add(key);objects.push({...p,_mapSourceKey:key});}
     }
     const edited=applyManualPoiEdits(type,objects);
     if(edited.length){
