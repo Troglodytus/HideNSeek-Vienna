@@ -1,0 +1,28 @@
+name: Audit park areas
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/park-area-audit-trigger.txt]
+permissions:
+  contents: write
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/v3.13.7-park-area-filter
+      - name: Verify client code
+        run: |
+          node --check app.js
+          grep -F 'const PARK_MIN_AREA_M2 = 100;' app.js
+      - name: Fetch OSM park polygons and measure areas
+        run: python3 .github/measure-parks.py
+      - name: Commit audit results
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .github/park-area-audit.json
+          git commit -m 'audit: park area measurements'
+          git push origin HEAD:feature/v3.13.7-park-area-filter
