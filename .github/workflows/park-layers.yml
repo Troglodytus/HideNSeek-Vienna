@@ -1,0 +1,24 @@
+name: Discover Vienna green layers
+on:
+  push:
+    branches: [feature/v3.13.7-park-area-filter]
+    paths: [.github/park-layers-trigger.txt]
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - name: List green-space WFS types
+        run: |
+          python3 - <<'PY'
+          import urllib.request,xml.etree.ElementTree as ET
+          url='https://data.wien.gv.at/daten/geo?service=WFS&request=GetCapabilities&version=1.1.0'
+          with urllib.request.urlopen(url,timeout=15) as r: xml=r.read()
+          tree=ET.fromstring(xml)
+          for ft in tree.findall('.//{http://www.opengis.net/wfs}FeatureType'):
+            name=ft.findtext('{http://www.opengis.net/wfs}Name') or ''
+            title=ft.findtext('{http://www.opengis.net/wfs}Title') or ''
+            s=(name+' '+title).lower()
+            if any(w in s for w in ['park','garten','grün','gruen','freiraum','erhol','wiese','fläche','flaeche']):print(name,title)
+          PY
